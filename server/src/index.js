@@ -125,10 +125,27 @@ function buildTableSummaries() {
   return out
 }
 
+/**
+ * Host plays with an uncapped credit line only until they take chips from the host bank
+ * (hostHasBankStack). After that, stack is real like any other player.
+ */
 function syncHostFlags(room) {
   room.players.forEach(p => {
-    p.unlimitedChips = p.socketId === room.hostId
+    p.unlimitedChips = p.socketId === room.hostId && !p.hostHasBankStack
   })
+}
+
+/** Copy room stack / unlimited flags into an in-progress hand. */
+function syncRoomStacksToActiveGame(room) {
+  const g = room.game
+  if (!g || !handInProgress(g)) return
+  for (const rp of room.players) {
+    const gp = g.players.find(x => x.socketId === rp.socketId)
+    if (gp) {
+      gp.stack = rp.stack
+      gp.unlimitedChips = rp.unlimitedChips
+    }
+  }
 }
 
 function assignHostIfNeeded(room) {
@@ -306,7 +323,7 @@ function sanitizeGame(game, viewerRp) {
       return {
         socketId: p.socketId,
         name: p.name,
-        stack: p.unlimitedChips ? null : p.stack,
+        stack: p.stack,
         unlimitedChips: p.unlimitedChips,
         streetBet: p.streetBet,
         folded: p.folded,
@@ -375,7 +392,7 @@ function broadcast(tableId) {
     players: room.players.map(p => ({
       socketId: p.socketId,
       name: p.name,
-      stack: p.unlimitedChips ? null : p.stack,
+      stack: p.stack,
       unlimitedChips: p.unlimitedChips,
       seat: p.seat,
       seated: !!p.seated,
@@ -488,6 +505,7 @@ function addPlayerToRoom(socket, room, name, isSuper) {
     stack: 0,
     joinedAt: Date.now(),
     unlimitedChips: false,
+    hostHasBankStack: false,
     isSuperAdmin: isSuper,
   })
   if (room.players.length === 1) {
@@ -772,44 +790,59 @@ io.on('connection', socket => {
     broadcast(tableId)
   })
 
-  socket.on('host_assign_chips', ({ tableId, targetSocketId, amount }) => {
+  function runHostAssignChips(tableId, targetSocketId, amount, fromSocket) {
     const room = getRoom(tableId)
-    if (!assertHost(socket, room)) return
+    if (!assertHost(fromSocket, room)) return
     const target = room.players.find(p => p.socketId === targetSocketId)
     if (!target) {
-      socket.emit('error_msg', 'That player is not at this table.')
+      fromSocket.emit('error_msg', 'That player is not at this table.')
       return
     }
     const amt = Math.trunc(Number(amount))
     if (!Number.isFinite(amt) || amt === 0) {
-      socket.emit('error_msg', 'Enter a valid chip amount.')
+      fromSocket.emit('error_msg', 'Enter a valid chip amount.')
       return
     }
     const g = room.game
     const phase = g?.phase
-    if (g && phase !== 'idle' && phase !== 'showdown') {
-      socket.emit('error_msg', 'Wait until the hand is finished to move chips.')
+    const midHand = g && phase !== 'idle' && phase !== 'showdown'
+    const hostSelfTopUp = amt > 0 && target.socketId === room.hostId
+    if (midHand && !hostSelfTopUp) {
+      fromSocket.emit('error_msg', 'Wait until the hand is finished to move chips.')
       return
     }
     if (amt > 0) {
       if (amt > room.hostBank) {
-        socket.emit('error_msg', 'Not enough chips in the host bank.')
+        fromSocket.emit('error_msg', 'Not enough chips in the host bank.')
         return
       }
       room.hostBank -= amt
       target.stack += amt
+      if (target.socketId === room.hostId) {
+        target.hostHasBankStack = true
+      }
     } else {
       const take = Math.min(-amt, target.stack)
       if (take <= 0) {
-        socket.emit('error_msg', 'That player has no chips to take back.')
+        fromSocket.emit('error_msg', 'That player has no chips to take back.')
         return
       }
       target.stack -= take
       room.hostBank += take
     }
+    syncHostFlags(room)
     syncIdleGameWithRoom(room)
+    syncRoomStacksToActiveGame(room)
     broadcast(tableId)
     if (!room.game && canStartHand(room)) scheduleAutoDeal(tableId)
+  }
+
+  socket.on('host_assign_chips', ({ tableId, targetSocketId, amount }) => {
+    runHostAssignChips(tableId, targetSocketId, amount, socket)
+  })
+
+  socket.on('give_chips', ({ tableId, targetSocketId, amount }) => {
+    runHostAssignChips(tableId, targetSocketId, amount, socket)
   })
 
   socket.on('kick_player', ({ tableId, targetSocketId }) => {

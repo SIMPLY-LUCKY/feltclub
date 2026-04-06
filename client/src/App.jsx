@@ -1663,6 +1663,9 @@ export default function App() {
                   const seatIdx = typeof slot.seat === 'number' ? slot.seat : 0
                   const pos = seatPosition(seatIdx, Math.max(maxSeats, 2), 41, 43)
                   const gp = mergedGamePlayers(slot.socketId)
+                  const inActiveHand = gp && game && game.phase !== 'idle' && game.phase !== 'showdown'
+                  const seatStack = inActiveHand ? gp.stack : (slot.stack ?? 0)
+                  const seatUnlimited = inActiveHand ? gp.unlimitedChips : slot.unlimitedChips
                   const active = gp && game?.players?.[game.currentPlayer]?.socketId === slot.socketId
                   const winner = gp && game?.winners?.includes(slot.socketId)
                   const folded = !!gp?.folded
@@ -1813,7 +1816,7 @@ export default function App() {
                             fontVariantNumeric: 'tabular-nums',
                           }}
                         >
-                          {slot.unlimitedChips ? '∞ BB' : formatBBAmount(slot.stack ?? 0, bigBlind)}
+                          {seatUnlimited ? '∞ BB' : formatBBAmount(seatStack ?? 0, bigBlind)}
                         </div>
                         {gp &&
                           game &&
@@ -1972,7 +1975,14 @@ export default function App() {
                 ${hostBank.toLocaleString()}
               </div>
               <p style={{ margin: '8px 0', fontSize: 11, color: '#5a6a7a', lineHeight: 1.4 }}>
-                Assign chips before play. You play with <strong>∞</strong> on the table.
+                {me?.unlimitedChips ? (
+                  <>
+                    Add chips from the bank to build your stack. Until then you play with <strong>∞</strong> on the
+                    table.
+                  </>
+                ) : (
+                  <>Your stack is shown in real chips on the table and in the player list.</>
+                )}
               </p>
               <input
                 type="number"
