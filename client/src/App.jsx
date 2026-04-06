@@ -69,15 +69,19 @@ function Card({ card, variant = 'hole', back, fourColor }) {
           borderRadius: br,
           boxSizing: 'border-box',
           flexShrink: 0,
-          background: `repeating-linear-gradient(
-            45deg,
-            #1a3a8a,
-            #1a3a8a 7px,
-            #1e4499 7px,
-            #1e4499 14px
-          )`,
-          border: '2px solid #243a7a',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+          background: `
+            radial-gradient(circle at 28% 32%, rgba(212,175,55,0.22) 0%, transparent 42%),
+            radial-gradient(circle at 72% 68%, rgba(212,175,55,0.18) 0%, transparent 38%),
+            repeating-linear-gradient(
+              52deg,
+              #1a2336 0px,
+              #1a2336 5px,
+              #243049 5px,
+              #243049 10px
+            )
+          `,
+          border: '2px solid #2a3548',
+          boxShadow: 'inset 0 0 0 1px rgba(212,175,55,0.25), 0 2px 10px rgba(0,0,0,0.5)',
         }}
       />
     )
@@ -150,6 +154,7 @@ function rowFitScale(count, cardW, gap, budgetPx) {
   return rowW > budgetPx ? Math.max(0.45, budgetPx / rowW) : 1
 }
 
+/** Ellipse seat anchor: i = 0 is top-center, proceeds clockwise (professional TV table layout). */
 function seatPosition(i, n, rxPct, ryPct) {
   const a = (Math.PI * 2 * i) / n - Math.PI / 2
   return {
@@ -157,6 +162,78 @@ function seatPosition(i, n, rxPct, ryPct) {
     top: `calc(50% + ${Math.sin(a) * ryPct}%)`,
     transform: 'translate(-50%, -50%)',
   }
+}
+
+function usdToBB(usd, bb) {
+  if (!bb || bb <= 0 || usd == null || !Number.isFinite(Number(usd))) return 0
+  return Number(usd) / bb
+}
+
+function formatBBAmount(usd, bb) {
+  const v = usdToBB(usd, bb)
+  if (!Number.isFinite(v)) return '—'
+  if (v >= 100) return `${Math.round(v)} BB`
+  if (v >= 10) return `${v.toFixed(1)} BB`
+  return `${v.toFixed(2)} BB`
+}
+
+function playerInitials(name) {
+  const t = String(name || '?').trim()
+  if (!t) return '?'
+  const parts = t.split(/\s+/)
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase()
+  return t.slice(0, 2).toUpperCase()
+}
+
+/** Small chip icon by street bet size (visual tier). */
+function BetChipIcon({ streetBet, bb }) {
+  const bbs = usdToBB(streetBet, bb)
+  let fill = '#c62828'
+  if (bbs >= 20) fill = '#1565c0'
+  else if (bbs >= 10) fill = '#2e7d32'
+  else if (bbs >= 3) fill = '#f9a825'
+  else if (bbs <= 0) fill = 'transparent'
+  if (bbs <= 0) return null
+  return (
+    <span
+      aria-hidden
+      style={{
+        display: 'inline-block',
+        width: 11,
+        height: 11,
+        borderRadius: '50%',
+        background: `linear-gradient(145deg, ${fill}, ${fill}cc)`,
+        border: '1px solid rgba(255,255,255,0.35)',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.5)',
+        verticalAlign: 'middle',
+        marginRight: 4,
+      }}
+    />
+  )
+}
+
+/** Decorative stack near main pot. */
+function PotChipDecor() {
+  const chips = ['#c62828', '#1565c0', '#f9a825', '#2e7d32']
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 0, height: 22, marginTop: 6 }}>
+      {chips.map((c, i) => (
+        <span
+          key={i}
+          style={{
+            width: 18,
+            height: 18,
+            borderRadius: '50%',
+            background: `linear-gradient(145deg, ${c}, ${c}99)`,
+            border: '1px solid rgba(255,255,255,0.25)',
+            marginLeft: i > 0 ? -8 : 0,
+            boxShadow: '0 2px 4px rgba(0,0,0,0.4)',
+            zIndex: i,
+          }}
+        />
+      ))}
+    </div>
+  )
 }
 
 export default function App() {
@@ -223,7 +300,7 @@ export default function App() {
   const vw = useViewportWidth()
 
   const boardScale = useMemo(() => {
-    const budget = Math.max(420, Math.min(vw * 0.95 - 24, 720))
+    const budget = Math.max(500, Math.min(vw * 0.58, 680))
     return rowFitScale(5, CARD_LAYOUT.board.w, BOARD_CARD_GAP, budget)
   }, [vw])
 
@@ -599,15 +676,34 @@ export default function App() {
     return Math.max(0, Math.ceil((game.turnDeadline - now) / 1000))
   }, [game?.turnDeadline, now])
 
-  /** Seated players only; host at top center, others by seat order on the oval. */
+  /** Seated players in seat order (physical seat index maps to position on the oval). */
   const orderedSeats = useMemo(() => {
-    const seatedOnly = roomPlayers.filter(p => p.seated !== false)
-    const sorted = [...seatedOnly].sort((a, b) => (a.seat ?? 0) - (b.seat ?? 0))
-    if (!hostId) return sorted
-    const hi = sorted.findIndex(p => p.socketId === hostId)
-    if (hi <= 0) return sorted
-    return [sorted[hi], ...sorted.slice(0, hi), ...sorted.slice(hi + 1)]
-  }, [roomPlayers, hostId])
+    return roomPlayers
+      .filter(p => p.seated !== false)
+      .sort((a, b) => (a.seat ?? 0) - (b.seat ?? 0))
+  }, [roomPlayers])
+
+  const dealerSeatIndex = useMemo(() => {
+    if (!game || game.dealer == null || game.dealer < 0) return null
+    const dp = game.players?.[game.dealer]
+    if (!dp) return null
+    const rp = roomPlayers.find(p => p.socketId === dp.socketId && p.seated !== false)
+    return typeof rp?.seat === 'number' ? rp.seat : null
+  }, [game, roomPlayers])
+
+  const potOddsLine = useMemo(() => {
+    if (!game || !raiseBounds || raiseBounds.toCall <= 0) return null
+    const pot = game.pot
+    const c = raiseBounds.toCall
+    const r = pot / c
+    const pct = (100 * c) / (pot + c)
+    return `Pot odds ${r.toFixed(2)} : 1 · need ~${pct.toFixed(1)}% equity`
+  }, [game, raiseBounds])
+
+  const showSidePotHint = useMemo(() => {
+    if (!game?.players?.length) return false
+    return game.players.filter(p => p.allIn).length >= 2
+  }, [game?.players])
 
   const needsChooseSeat = seatAssignment === 'choose' && me && me.seated === false
 
@@ -1197,7 +1293,7 @@ export default function App() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#07090e' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#0a0a0a' }}>
       {/* Top bar */}
       <header
         style={{
@@ -1343,340 +1439,486 @@ export default function App() {
         </div>
       )}
 
-      <div style={{ flex: 1, display: 'flex', minHeight: 0, padding: 12, gap: 12 }}>
+      <div style={{ flex: 1, display: 'flex', minHeight: 0, padding: '8px 12px 12px', gap: 12 }}>
         {/* Table + log */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0, minHeight: 0 }}>
           <div
             style={{
               flex: 1,
-              minHeight: Math.max(600, Math.min(880, Math.round(vw * 1.38))),
+              minHeight: 'min(80vh, 820px)',
+              height: '80vh',
+              maxHeight: 900,
               position: 'relative',
-              borderRadius: 20,
-              overflow: 'auto',
-              background: 'radial-gradient(ellipse 78% 62% at 50% 50%, #1e4a7a 0%, #153a62 38%, #0f2848 100%)',
-              border: '3px solid #2a5080',
-              boxShadow: 'inset 0 0 100px rgba(0,40,80,0.38), 0 12px 40px rgba(0,0,0,0.45)',
+              borderRadius: 12,
+              overflow: 'visible',
+              background: '#0a0a0a',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
             }}
           >
-            {needsChooseSeat && (
-              <div
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  zIndex: 15,
-                  borderRadius: 17,
-                  background: 'radial-gradient(ellipse 78% 62% at 50% 50%, #1e4a7a 0%, #153a62 38%, #0f2848 100%)',
-                  boxShadow: 'inset 0 0 100px rgba(0,40,80,0.38)',
-                  overflow: 'hidden',
-                }}
-              >
-                <div style={{ textAlign: 'center', padding: '24px 16px 8px' }}>
-                  <div style={{ fontSize: 22, fontWeight: 800, color: '#6eb5ff', marginBottom: 6 }}>Choose your seat</div>
-                  <div style={{ fontSize: 13, color: '#8ab8e8' }}>Tap a glowing seat to sit. Taken seats show the player name.</div>
-                </div>
-                {Array.from({ length: maxSeats }, (_, i) => {
-                  const occupant = roomPlayers.find(p => p.seated !== false && typeof p.seat === 'number' && p.seat === i)
-                  const pos = seatPosition(i, maxSeats, 51, 53)
-                  return (
-                    <div
-                      key={i}
-                      style={{
-                        position: 'absolute',
-                        ...pos,
-                        width: 'max-content',
-                        zIndex: 2,
-                      }}
-                    >
-                      {occupant ? (
-                        <div
-                          title={occupant.name}
-                          style={{
-                            width: 64,
-                            height: 64,
-                            borderRadius: '50%',
-                            border: '2px solid #4a5a68',
-                            background: 'rgba(0,0,0,0.55)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            fontSize: 10,
-                            fontWeight: 700,
-                            color: '#c8d8e8',
-                            textAlign: 'center',
-                            padding: 6,
-                            lineHeight: 1.15,
-                            boxSizing: 'border-box',
-                            wordBreak: 'break-word',
-                            cursor: 'default',
-                          }}
-                        >
-                          {occupant.name.length > 14 ? `${occupant.name.slice(0, 12)}…` : occupant.name}
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => chooseSeat(i)}
-                          aria-label={`Sit in seat ${i + 1}`}
-                          style={{
-                            width: 56,
-                            height: 56,
-                            borderRadius: '50%',
-                            border: '2px solid #8ec8ff',
-                            background: 'rgba(35,90,150,0.5)',
-                            cursor: 'pointer',
-                            boxShadow:
-                              '0 0 16px rgba(110,181,255,0.95), 0 0 32px rgba(110,181,255,0.45), inset 0 0 14px rgba(255,255,255,0.12)',
-                          }}
-                        />
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-            {nextHandShowSec != null && nextHandShowSec > 0 && (
+            <div
+              style={{
+                position: 'relative',
+                width: 'min(96%, 1100px)',
+                height: 'min(78vh, 760px)',
+                maxHeight: '80vh',
+                minHeight: 480,
+              }}
+            >
               <div
                 style={{
                   position: 'absolute',
                   left: '50%',
                   top: '50%',
-                  transform: 'translate(-50%,-50%)',
-                  zIndex: 12,
-                  pointerEvents: 'none',
-                  textAlign: 'center',
-                  padding: '18px 28px',
-                  borderRadius: 16,
-                  background: 'rgba(0,0,0,0.72)',
-                  border: '2px solid rgba(255,213,79,0.55)',
-                  boxShadow: '0 12px 40px rgba(0,0,0,0.55)',
+                  transform: 'translate(-50%, -50%)',
+                  width: '100%',
+                  height: '88%',
+                  maxWidth: 1040,
+                  borderRadius: '50%',
+                  background: 'radial-gradient(ellipse 100% 100% at 50% 40%, #0a9a42 0%, #076324 42%, #043d18 100%)',
+                  boxShadow: `
+                    0 0 0 3px #d4af37,
+                    0 0 0 14px #2a1500,
+                    0 0 0 17px #1a0c00,
+                    0 32px 64px rgba(0,0,0,0.85),
+                    0 12px 28px rgba(0,0,0,0.55),
+                    inset 0 3px 22px rgba(255,255,255,0.1),
+                    inset 0 -28px 55px rgba(0,0,0,0.38)
+                  `,
                 }}
-              >
-                <div
-                  style={{
-                    fontSize: 28,
-                    fontWeight: 900,
-                    color: '#ffe082',
-                    letterSpacing: 1,
-                    textShadow: '0 2px 12px rgba(0,0,0,0.8)',
-                  }}
-                >
-                  New hand in {nextHandShowSec}…
-                </div>
-              </div>
-            )}
-            <div
-              style={{
-                position: 'absolute',
-                left: '50%',
-                top: '44%',
-                transform: 'translate(-50%,-50%)',
-                textAlign: 'center',
-                zIndex: 1,
-              }}
-            >
-              <div style={{ fontSize: 16, color: '#8ab8e8', letterSpacing: 2, marginBottom: 12 }}>
-                {(game && PHASE_LABELS[game.phase]) || 'WAITING'}
-              </div>
-              <div
-                style={{
-                  width: boardRowW * boardScale,
-                  height: boardRowH * boardScale,
-                  margin: '0 auto 12px',
-                  display: 'flex',
-                  justifyContent: 'center',
-                  alignItems: 'flex-start',
-                  maxWidth: '100%',
-                }}
-              >
-                <div style={{ transform: `scale(${boardScale})`, transformOrigin: 'top center' }}>
+              />
+
+              <div style={{ position: 'absolute', inset: 0, overflow: 'visible', zIndex: 1 }}>
+                {needsChooseSeat && (
                   <div
                     style={{
-                      display: 'flex',
-                      gap: BOARD_CARD_GAP,
-                      flexWrap: 'wrap',
-                      justifyContent: 'center',
-                      width: boardRowW,
+                      position: 'absolute',
+                      inset: 0,
+                      zIndex: 15,
+                      borderRadius: '50%',
+                      background: 'radial-gradient(ellipse 100% 100% at 50% 42%, #0a8a3a 0%, #065a20 100%)',
+                      boxShadow: 'inset 0 0 60px rgba(0,0,0,0.35)',
+                      overflow: 'hidden',
+                      pointerEvents: 'auto',
                     }}
                   >
-                    {[0, 1, 2, 3, 4].map(i => (
-                      <Card
-                        key={i}
-                        variant="board"
-                        card={game?.community?.[i]}
-                        fourColor={fourColor}
-                        back={!game?.community?.[i]}
-                      />
-                    ))}
+                    <div style={{ textAlign: 'center', padding: '22px 16px 6px' }}>
+                      <div style={{ fontSize: 21, fontWeight: 800, color: '#fff', marginBottom: 6 }}>Choose your seat</div>
+                      <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.85)' }}>
+                        Tap a glowing seat. Taken seats show the player name.
+                      </div>
+                    </div>
+                    {Array.from({ length: maxSeats }, (_, i) => {
+                      const occupant = roomPlayers.find(p => p.seated !== false && typeof p.seat === 'number' && p.seat === i)
+                      const pos = seatPosition(i, Math.max(maxSeats, 2), 42, 44)
+                      return (
+                        <div
+                          key={i}
+                          style={{
+                            position: 'absolute',
+                            ...pos,
+                            width: 'max-content',
+                            zIndex: 2,
+                            pointerEvents: 'auto',
+                          }}
+                        >
+                          {occupant ? (
+                            <div
+                              title={occupant.name}
+                              style={{
+                                width: 60,
+                                height: 60,
+                                borderRadius: '50%',
+                                border: '2px solid rgba(0,0,0,0.45)',
+                                background: 'rgba(0,0,0,0.5)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontSize: 11,
+                                fontWeight: 700,
+                                color: '#fff',
+                                textAlign: 'center',
+                                padding: 5,
+                                boxSizing: 'border-box',
+                                wordBreak: 'break-word',
+                              }}
+                            >
+                              {occupant.name.length > 12 ? `${occupant.name.slice(0, 10)}…` : occupant.name}
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => chooseSeat(i)}
+                              aria-label={`Sit in seat ${i + 1}`}
+                              style={{
+                                width: 54,
+                                height: 54,
+                                borderRadius: '50%',
+                                border: '2px solid #ffe082',
+                                background: 'rgba(30,80,40,0.55)',
+                                cursor: 'pointer',
+                                boxShadow:
+                                  '0 0 18px rgba(255,224,130,0.9), 0 0 36px rgba(212,175,55,0.45), inset 0 0 12px rgba(255,255,255,0.12)',
+                              }}
+                            />
+                          )}
+                        </div>
+                      )
+                    })}
                   </div>
-                </div>
-              </div>
-              <div
-                style={{
-                  display: 'inline-block',
-                  padding: '10px 22px',
-                  borderRadius: 24,
-                  background: 'rgba(0,0,0,0.45)',
-                  border: '2px solid #3a6a9a',
-                  color: '#b8d8ff',
-                  fontWeight: 700,
-                  fontSize: 20,
-                }}
-              >
-                Pot ${game?.pot ?? 0}
-              </div>
-            </div>
+                )}
 
-            {orderedSeats.map((slot, occIdx) => {
-              const n = Math.max(orderedSeats.length, 1)
-              const pos = seatPosition(occIdx, n, 51, 53)
-              const gp = mergedGamePlayers(slot.socketId)
-              const active = gp && game?.players?.[game.currentPlayer]?.socketId === slot.socketId
-              const winner = gp && game?.winners?.includes(slot.socketId)
-              const cards = cardsForSeat(slot)
-              const showCards =
-                cards &&
-                cards.length > 0 &&
-                cards.some(c => c !== null && typeof c === 'object' && c.r)
-
-              return (
-                <div
-                  key={slot.socketId}
-                  style={{
-                    position: 'absolute',
-                    ...pos,
-                    width: 'max-content',
-                    maxWidth: 'min(92vw, 360px)',
-                    zIndex: 3,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    gap: 12,
-                    overflow: 'hidden',
-                    boxSizing: 'border-box',
-                  }}
-                >
+                {nextHandShowSec != null && nextHandShowSec > 0 && (
                   <div
                     style={{
-                      width: holeRowW * holeScale,
-                      minHeight: holeRowH * holeScale,
-                      maxWidth: '100%',
+                      position: 'absolute',
+                      left: '50%',
+                      top: '50%',
+                      transform: 'translate(-50%,-50%)',
+                      zIndex: 12,
+                      pointerEvents: 'none',
+                      textAlign: 'center',
+                      padding: '18px 28px',
+                      borderRadius: 16,
+                      background: 'rgba(0,0,0,0.78)',
+                      border: '2px solid #d4af37',
+                      boxShadow: '0 12px 40px rgba(0,0,0,0.65)',
+                    }}
+                  >
+                    <div style={{ fontSize: 26, fontWeight: 900, color: '#ffe082', letterSpacing: 1 }}>
+                      New hand in {nextHandShowSec}…
+                    </div>
+                  </div>
+                )}
+
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: '50%',
+                    top: '50%',
+                    transform: 'translate(-50%,-50%)',
+                    textAlign: 'center',
+                    zIndex: 2,
+                    width: 'min(92%, 720px)',
+                    pointerEvents: 'none',
+                  }}
+                >
+                  <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.65)', letterSpacing: 3, marginBottom: 6, textTransform: 'uppercase' }}>
+                    {(game && PHASE_LABELS[game.phase]) || 'Waiting'}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 'clamp(18px, 3.2vw, 26px)',
+                      fontWeight: 800,
+                      color: '#fff',
+                      textShadow: '0 2px 12px rgba(0,0,0,0.65)',
+                      marginBottom: 4,
+                    }}
+                  >
+                    Total Pot: {formatBBAmount(game?.pot ?? 0, bigBlind)}
+                  </div>
+                  <div style={{ pointerEvents: 'none', display: 'flex', justifyContent: 'center' }}>
+                    <PotChipDecor />
+                  </div>
+                  {showSidePotHint && (
+                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.55)', marginTop: 4 }}>Multiple all-ins — side pots may apply</div>
+                  )}
+                  <div
+                    style={{
+                      width: boardRowW * boardScale,
+                      height: boardRowH * boardScale,
+                      margin: '10px auto 0',
                       display: 'flex',
                       justifyContent: 'center',
                       alignItems: 'flex-start',
+                      maxWidth: '100%',
                     }}
                   >
-                    <div style={{ transform: `scale(${holeScale})`, transformOrigin: 'top center' }}>
+                    <div style={{ transform: `scale(${boardScale})`, transformOrigin: 'top center' }}>
                       <div
                         style={{
                           display: 'flex',
-                          gap: HOLE_CARD_GAP,
+                          gap: BOARD_CARD_GAP,
                           flexWrap: 'wrap',
                           justifyContent: 'center',
-                          maxWidth: holeRowW,
+                          width: boardRowW,
                         }}
                       >
-                        {showCards ? (
-                          cards.map((c, j) => (
-                            <Card
-                              key={j}
-                              variant="hole"
-                              card={c}
-                              fourColor={fourColor}
-                              back={!c || !c.r}
-                            />
-                          ))
-                        ) : cards ? (
-                          cards.map((_, j) => (
-                            <Card key={j} variant="hole" back fourColor={fourColor} />
-                          ))
-                        ) : (
-                          <span style={{ fontSize: 18, color: '#5a7a9a' }}>—</span>
-                        )}
+                        {[0, 1, 2, 3, 4].map(i => (
+                          <Card
+                            key={i}
+                            variant="board"
+                            card={game?.community?.[i]}
+                            fourColor={fourColor}
+                            back={!game?.community?.[i]}
+                          />
+                        ))}
                       </div>
                     </div>
                   </div>
-                  <div
-                    style={{
-                      padding: '10px 16px',
-                      borderRadius: 12,
-                      background: winner ? 'rgba(40,80,40,0.85)' : active ? 'rgba(40,60,90,0.9)' : 'rgba(0,0,0,0.5)',
-                      border: `2px solid ${winner ? '#5a8a5a' : active ? '#6eb5ff' : '#2a4058'}`,
-                      fontSize: 20,
-                      maxWidth: 'min(96vw, 1200px)',
-                      textAlign: 'center',
-                      color: '#e8eef8',
-                    }}
-                  >
-                    <div style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {slot.name}
-                      {slot.socketId === sid ? ' · you' : ''}
-                    </div>
+                </div>
+
+                {orderedSeats.map(slot => {
+                  const seatIdx = typeof slot.seat === 'number' ? slot.seat : 0
+                  const pos = seatPosition(seatIdx, Math.max(maxSeats, 2), 41, 43)
+                  const gp = mergedGamePlayers(slot.socketId)
+                  const active = gp && game?.players?.[game.currentPlayer]?.socketId === slot.socketId
+                  const winner = gp && game?.winners?.includes(slot.socketId)
+                  const folded = !!gp?.folded
+                  const cards = cardsForSeat(slot)
+                  const showCards =
+                    cards &&
+                    cards.length > 0 &&
+                    cards.some(c => c !== null && typeof c === 'object' && c.r)
+                  const nHole = cards?.length ?? 0
+                  const fanItems =
+                    showCards && cards
+                      ? cards.map((c, j) => ({ key: j, card: c, back: !c || !c.r }))
+                      : cards && nHole > 0
+                        ? Array.from({ length: nHole }, (_, j) => ({ key: j, card: null, back: true }))
+                        : []
+
+                  return (
                     <div
+                      key={slot.socketId}
                       style={{
-                        marginTop: 4,
-                        minHeight: 28,
-                        fontSize: slot.unlimitedChips ? 26 : 17,
-                        fontWeight: slot.unlimitedChips ? 900 : 500,
-                        color: slot.unlimitedChips ? '#ffd54f' : '#9ab8d8',
-                        fontVariantNumeric: 'tabular-nums',
-                        lineHeight: 1.1,
-                        textShadow: slot.unlimitedChips ? '0 0 12px rgba(255,213,79,0.35)' : 'none',
+                        position: 'absolute',
+                        ...pos,
+                        width: 'max-content',
+                        maxWidth: 'min(88vw, 280px)',
+                        zIndex: 4,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: 6,
+                        boxSizing: 'border-box',
+                        opacity: folded ? 0.42 : 1,
+                        filter: folded ? 'grayscale(0.35)' : 'none',
+                        pointerEvents: 'none',
                       }}
                     >
-                      {slot.unlimitedChips ? '∞' : `$${slot.stack ?? 0}`}
+                      <div
+                        style={{
+                          position: 'relative',
+                          width: Math.max(120, nHole * 28 + 40),
+                          height: Math.max(52, holeRowH * holeScale * 0.75),
+                          marginBottom: 2,
+                        }}
+                      >
+                        {fanItems.length > 0 ? (
+                          fanItems.map((item, j) => {
+                            const n = fanItems.length
+                            const off = j - (n - 1) / 2
+                            return (
+                              <div
+                                key={item.key}
+                                style={{
+                                  position: 'absolute',
+                                  left: '50%',
+                                  bottom: 0,
+                                  transform: `translateX(-50%) translateX(${off * 18}px) rotate(${off * 13}deg)`,
+                                  transformOrigin: 'bottom center',
+                                  zIndex: j,
+                                }}
+                              >
+                                <div style={{ transform: `scale(${holeScale * 0.88})`, transformOrigin: 'bottom center' }}>
+                                  <Card
+                                    variant="hole"
+                                    card={item.card}
+                                    fourColor={fourColor}
+                                    back={item.back}
+                                  />
+                                </div>
+                              </div>
+                            )
+                          })
+                        ) : null}
+                      </div>
+
+                      <div style={{ position: 'relative', width: 60, height: 60, flexShrink: 0 }}>
+                        <div
+                          style={{
+                            width: 60,
+                            height: 60,
+                            borderRadius: '50%',
+                            background: 'linear-gradient(165deg, #4a5568 0%, #2a3038 100%)',
+                            border: winner
+                              ? '3px solid #ffe082'
+                              : active
+                                ? '3px solid #d4af37'
+                                : '2px solid rgba(0,0,0,0.55)',
+                            boxShadow: active
+                              ? '0 0 0 2px rgba(212,175,55,0.35), 0 0 24px rgba(212,175,55,0.55), 0 6px 16px rgba(0,0,0,0.5)'
+                              : winner
+                                ? '0 0 18px rgba(255,224,130,0.45), 0 6px 16px rgba(0,0,0,0.5)'
+                                : '0 6px 16px rgba(0,0,0,0.45)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: 19,
+                            fontWeight: 800,
+                            color: '#fff',
+                            letterSpacing: -0.5,
+                          }}
+                        >
+                          {playerInitials(slot.name)}
+                        </div>
+                        {dealerSeatIndex != null && dealerSeatIndex === seatIdx && (
+                          <div
+                            style={{
+                              position: 'absolute',
+                              right: -4,
+                              top: -2,
+                              width: 22,
+                              height: 22,
+                              borderRadius: '50%',
+                              background: 'linear-gradient(180deg, #f4d03f, #b8860b)',
+                              color: '#1a0f00',
+                              fontSize: 11,
+                              fontWeight: 900,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              border: '2px solid #2a1500',
+                              boxShadow: '0 2px 8px rgba(0,0,0,0.55)',
+                            }}
+                          >
+                            D
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ textAlign: 'center', maxWidth: 120 }}>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 700,
+                            color: '#fff',
+                            textShadow: '0 1px 4px rgba(0,0,0,0.8)',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {slot.name}
+                          {slot.socketId === sid ? ' · you' : ''}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            color: 'rgba(255,255,255,0.88)',
+                            marginTop: 2,
+                            fontVariantNumeric: 'tabular-nums',
+                          }}
+                        >
+                          {slot.unlimitedChips ? '∞ BB' : formatBBAmount(slot.stack ?? 0, bigBlind)}
+                        </div>
+                        {gp &&
+                          game &&
+                          game.phase !== 'idle' &&
+                          game.phase !== 'showdown' &&
+                          (gp.streetBet ?? 0) > 0 && (
+                            <div
+                              style={{
+                                marginTop: 4,
+                                fontSize: 11,
+                                fontWeight: 700,
+                                color: '#fff3d0',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: 2,
+                                textShadow: '0 1px 3px rgba(0,0,0,0.7)',
+                              }}
+                            >
+                              <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                                <BetChipIcon streetBet={gp.streetBet} bb={bigBlind} />
+                              </span>
+                              {formatBBAmount(gp.streetBet, bigBlind)}
+                            </div>
+                          )}
+                        {gp?.handLabel && (
+                          <div style={{ fontSize: 10, color: '#c8f0c8', marginTop: 3, fontWeight: 600 }}>{gp.handLabel}</div>
+                        )}
+                      </div>
                     </div>
-                    {gp?.handLabel && (
-                      <div style={{ fontSize: 15, color: '#a8d8a8' }}>{gp.handLabel}</div>
-                    )}
-                  </div>
-                </div>
-              )
-            })}
+                  )
+                })}
+              </div>
+            </div>
           </div>
 
           {/* Actions */}
           {myTurn && raiseBounds && (
             <div
               style={{
-                padding: 12,
-                background: '#101820',
-                borderRadius: 12,
-                border: '1px solid #2a4058',
+                padding: '14px 16px 18px',
+                background: 'linear-gradient(180deg, #141820 0%, #0d1018 100%)',
+                borderRadius: 14,
+                border: '1px solid #2a2520',
+                boxShadow: '0 -8px 32px rgba(0,0,0,0.45)',
                 display: 'flex',
-                flexWrap: 'wrap',
+                flexDirection: 'column',
                 alignItems: 'center',
-                gap: 10,
+                gap: 12,
+                maxWidth: 560,
+                margin: '0 auto',
+                width: '100%',
               }}
             >
-              <span style={{ fontSize: 12, color: '#8ab8e8' }}>
-                Your turn · <strong style={{ color: actSecsLeft <= 5 ? '#ff8a80' : '#b8d8ff' }}>{actSecsLeft}s</strong>
-              </span>
-              <button type="button" onClick={() => doAction('fold')} style={btnFold}>
-                Fold
-              </button>
-              {raiseBounds.toCall === 0 ? (
-                <button type="button" onClick={() => doAction('check')} style={btnOk}>
-                  Check
-                </button>
-              ) : (
-                <button type="button" onClick={() => doAction('call')} style={btnOk}>
-                  Call ${raiseBounds.toCall}
-                </button>
+              <div style={{ fontSize: 12, color: '#a8b0c0', alignSelf: 'stretch', textAlign: 'center' }}>
+                Your turn ·{' '}
+                <strong style={{ color: actSecsLeft <= 5 ? '#ff7043' : '#fff' }}>{actSecsLeft}s</strong>
+              </div>
+              {potOddsLine && raiseBounds.toCall > 0 && (
+                <div style={{ fontSize: 11, color: '#c9a227', textAlign: 'center', maxWidth: 420, lineHeight: 1.35 }}>
+                  {potOddsLine}
+                </div>
               )}
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#8a9aaa' }}>
-                Raise to
+              <label
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'stretch',
+                  gap: 6,
+                  fontSize: 12,
+                  color: '#9aa4b4',
+                  width: '100%',
+                  maxWidth: 480,
+                }}
+              >
+                <span style={{ textAlign: 'center' }}>
+                  Raise to <strong style={{ color: '#fff' }}>{formatBBAmount(raiseTo, bigBlind)}</strong>
+                  <span style={{ color: '#6a7384', fontWeight: 400 }}> (${raiseTo})</span>
+                </span>
                 <input
                   type="range"
                   min={raiseBounds.minRaiseTo}
                   max={raiseBounds.maxRaiseTo}
                   value={Math.min(raiseTo, raiseBounds.maxRaiseTo)}
                   onChange={e => setRaiseTo(+e.target.value)}
+                  style={{ width: '100%', accentColor: '#d4af37' }}
                 />
-                <span style={{ minWidth: 48, fontVariantNumeric: 'tabular-nums' }}>${raiseTo}</span>
               </label>
-              <button type="button" onClick={doRaise} style={btnRaise}>
-                Raise
-              </button>
+              <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 12, width: '100%' }}>
+                <button type="button" onClick={() => doAction('fold')} style={btnFold}>
+                  FOLD
+                </button>
+                {raiseBounds.toCall === 0 ? (
+                  <button type="button" onClick={() => doAction('check')} style={btnCall}>
+                    CHECK
+                  </button>
+                ) : (
+                  <button type="button" onClick={() => doAction('call')} style={btnCall}>
+                    CALL {formatBBAmount(raiseBounds.toCall, bigBlind)}
+                  </button>
+                )}
+                <button type="button" onClick={doRaise} style={btnRaise}>
+                  RAISE
+                </button>
+              </div>
             </div>
           )}
 
@@ -1918,33 +2160,45 @@ export default function App() {
 }
 
 const btnFold = {
-  padding: '8px 16px',
-  borderRadius: 8,
-  border: '1px solid #6a3030',
-  background: 'transparent',
-  color: '#e57373',
+  padding: '14px 28px',
+  borderRadius: 10,
+  border: '2px solid #8b2a2a',
+  background: 'linear-gradient(180deg, #c62828 0%, #8e1b1b 100%)',
+  color: '#fff',
+  fontWeight: 800,
   cursor: 'pointer',
-  fontSize: 13,
+  fontSize: 15,
+  letterSpacing: 0.5,
+  boxShadow: '0 4px 14px rgba(198,40,40,0.45)',
+  minWidth: 120,
 }
-const btnOk = {
-  padding: '8px 16px',
-  borderRadius: 8,
-  border: '1px solid #2a6080',
-  background: 'rgba(40,90,130,0.4)',
-  color: '#b8d8ff',
+const btnCall = {
+  padding: '14px 28px',
+  borderRadius: 10,
+  border: '2px solid #1e4a7a',
+  background: 'linear-gradient(180deg, #1e6ba8 0%, #124a78 100%)',
+  color: '#fff',
+  fontWeight: 800,
   cursor: 'pointer',
-  fontSize: 13,
+  fontSize: 15,
+  letterSpacing: 0.5,
+  boxShadow: '0 4px 14px rgba(30,107,168,0.4)',
+  minWidth: 120,
 }
 const btnRaise = {
-  padding: '8px 16px',
-  borderRadius: 8,
-  border: 'none',
-  background: '#2a6cb0',
-  color: '#fff',
-  fontWeight: 700,
+  padding: '14px 28px',
+  borderRadius: 10,
+  border: '2px solid #8a6d1f',
+  background: 'linear-gradient(180deg, #f4d03f 0%, #c9a227 45%, #9a7b18 100%)',
+  color: '#1a1200',
+  fontWeight: 800,
   cursor: 'pointer',
-  fontSize: 13,
+  fontSize: 15,
+  letterSpacing: 0.5,
+  boxShadow: '0 4px 16px rgba(201,162,39,0.45)',
+  minWidth: 120,
 }
+const btnOk = btnCall
 const miniBtn = {
   padding: '2px 8px',
   fontSize: 11,
