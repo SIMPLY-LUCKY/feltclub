@@ -1664,8 +1664,8 @@ export default function App() {
                   const pos = seatPosition(seatIdx, Math.max(maxSeats, 2), 41, 43)
                   const gp = mergedGamePlayers(slot.socketId)
                   const inActiveHand = gp && game && game.phase !== 'idle' && game.phase !== 'showdown'
-                  const seatStack = inActiveHand ? gp.stack : (slot.stack ?? 0)
-                  const seatUnlimited = inActiveHand ? gp.unlimitedChips : slot.unlimitedChips
+                  const seatStack = slot.stack ?? 0
+                  const seatUnlimited = !!slot.unlimitedChips && (slot.stack ?? 0) <= 0
                   const active = gp && game?.players?.[game.currentPlayer]?.socketId === slot.socketId
                   const winner = gp && game?.winners?.includes(slot.socketId)
                   const folded = !!gp?.folded
@@ -1975,7 +1975,7 @@ export default function App() {
                 ${hostBank.toLocaleString()}
               </div>
               <p style={{ margin: '8px 0', fontSize: 11, color: '#5a6a7a', lineHeight: 1.4 }}>
-                {me?.unlimitedChips ? (
+                {me?.unlimitedChips && (me?.stack ?? 0) <= 0 ? (
                   <>
                     Add chips from the bank to build your stack. Until then you play with <strong>∞</strong> on the
                     table.
@@ -2110,7 +2110,7 @@ export default function App() {
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
                   <span style={{ fontVariantNumeric: 'tabular-nums', color: '#7a8a9a' }}>
-                    {p.unlimitedChips ? '∞' : `$${p.stack ?? 0}`}
+                    {p.unlimitedChips && (p.stack ?? 0) <= 0 ? '∞' : `$${p.stack ?? 0}`}
                   </span>
                   {isHost && p.socketId !== sid && (
                     <>

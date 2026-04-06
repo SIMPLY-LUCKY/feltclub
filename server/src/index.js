@@ -135,10 +135,13 @@ function syncHostFlags(room) {
   })
 }
 
-/** Copy room stack / unlimited flags into an in-progress hand. */
-function syncRoomStacksToActiveGame(room) {
+/**
+ * Copy room stack / unlimited flags into `room.game.players` whenever a game exists.
+ * Used after host bank chip moves so clients never see stale `game.players` (e.g. during showdown).
+ */
+function syncRoomStacksIntoGame(room) {
   const g = room.game
-  if (!g || !handInProgress(g)) return
+  if (!g) return
   for (const rp of room.players) {
     const gp = g.players.find(x => x.socketId === rp.socketId)
     if (gp) {
@@ -205,7 +208,7 @@ function tryStartNextHand(tableId) {
   if (!r?.game || (r.game.phase !== 'idle' && r.game.phase !== 'showdown')) return
   if (!canStartHand(r)) return
   if (startHand(r)) {
-    broadcast(tableId)
+    broadcastRoom(tableId)
     refreshTurnTimer(tableId)
   }
 }
@@ -278,7 +281,7 @@ function afterAction(room, tableId) {
     clearTurn(room)
     scheduleAutoDeal(tableId)
   }
-  broadcast(tableId)
+  broadcastRoom(tableId)
   refreshTurnTimer(tableId)
 }
 
@@ -382,7 +385,7 @@ function privateHoleCardsForSocket(game, socketId) {
   return Array.isArray(p?.holeCards) ? p.holeCards : []
 }
 
-function broadcast(tableId) {
+function broadcastRoom(tableId) {
   const room = getRoom(tableId)
   if (!room) return
   const g = room.game
@@ -474,7 +477,7 @@ function removeFromTable(tableId, socketId) {
     rooms.delete(tableId)
     return
   }
-  broadcast(tableId)
+  broadcastRoom(tableId)
 }
 
 function leaveCurrentTable(socket) {
@@ -517,7 +520,7 @@ function addPlayerToRoom(socket, room, name, isSuper) {
   socket.data.tableId = room.tableId
   socket.data.name = name
   syncIdleGameWithRoom(room)
-  broadcast(room.tableId)
+  broadcastRoom(room.tableId)
   if (room.autoDealAt != null) {
     const sec = Math.max(1, Math.ceil((room.autoDealAt - Date.now()) / 1000))
     socket.emit('next_hand_countdown', { tableId: room.tableId, secondsRemaining: sec })
@@ -700,7 +703,7 @@ io.on('connection', socket => {
       socket.join(tableId)
       socket.data.tableId = tableId
       socket.data.name = name
-      broadcast(tableId)
+      broadcastRoom(tableId)
       return
     }
 
@@ -760,7 +763,7 @@ io.on('connection', socket => {
     actor.seated = true
     actor.seat = seat
     syncIdleGameWithRoom(room)
-    broadcast(tableId)
+    broadcastRoom(tableId)
   })
 
   socket.on('leave_table', ({ tableId: tid }) => {
@@ -787,7 +790,7 @@ io.on('connection', socket => {
       return
     }
     room.gameType = gameType
-    broadcast(tableId)
+    broadcastRoom(tableId)
   })
 
   function runHostAssignChips(tableId, targetSocketId, amount, fromSocket) {
@@ -832,8 +835,8 @@ io.on('connection', socket => {
     }
     syncHostFlags(room)
     syncIdleGameWithRoom(room)
-    syncRoomStacksToActiveGame(room)
-    broadcast(tableId)
+    syncRoomStacksIntoGame(room)
+    broadcastRoom(tableId)
     if (!room.game && canStartHand(room)) scheduleAutoDeal(tableId)
   }
 
@@ -868,7 +871,7 @@ io.on('connection', socket => {
       return
     }
     if (startHand(room)) {
-      broadcast(tableId)
+      broadcastRoom(tableId)
       refreshTurnTimer(tableId)
     }
   })
@@ -886,7 +889,7 @@ io.on('connection', socket => {
       return
     }
     if (startHand(room)) {
-      broadcast(tableId)
+      broadcastRoom(tableId)
       refreshTurnTimer(tableId)
     }
   })
@@ -905,7 +908,7 @@ io.on('connection', socket => {
       return
     }
     g.showAllCards = reveal !== false
-    broadcast(tableId)
+    broadcastRoom(tableId)
   })
 
   socket.on('player_action', ({ tableId, action }) => {
@@ -924,7 +927,7 @@ io.on('connection', socket => {
     if (!t) return
     room.chat.push({ from: p.name, text: t, ts: Date.now() })
     while (room.chat.length > CHAT_MAX) room.chat.shift()
-    broadcast(tableId)
+    broadcastRoom(tableId)
   })
 
   socket.on('request_raise_bounds', ({ tableId }) => {
