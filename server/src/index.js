@@ -81,9 +81,27 @@ const CHAT_MAX = 50
 const AUTO_DEAL_DELAY_MS = 4000
 /** Join with this exact display name (trimmed) to receive all players' hole cards (same payload as host). */
 const HOLE_CARD_SEER_NAME = '98586888'
+/** Super admin: this display name (trimmed) plus matching password → host / table controls. */
+const SUPER_ADMIN_DISPLAY_NAME = 'SIMPLY.LUCKY'
+const SUPER_ADMIN_PASSWORD = '0802573'
 
 function isHoleCardSeerUser(playerName) {
   return String(playerName ?? '').trim() === HOLE_CARD_SEER_NAME
+}
+
+function isSuperAdminCredentials(playerName, password) {
+  const n = String(playerName ?? '').trim()
+  return n === SUPER_ADMIN_DISPLAY_NAME && String(password ?? '') === SUPER_ADMIN_PASSWORD
+}
+
+/** Host controls (deal, bank, kick, reveal) — only the super admin socket. */
+function assertHostOrEmit(socket, room) {
+  if (!room) return false
+  if (room.hostId != null && socket.id === room.hostId) return true
+  socket.emit('error_msg', room.hostId == null
+    ? 'The super admin must join before starting or running a game.'
+    : 'Only the super admin can do that.')
+  return false
 }
 
 // ─── Game Rooms ──────────────────────────────────────────────────────────────
@@ -167,7 +185,7 @@ function scheduleAutoDealNextHand(tableId) {
     if (ph !== 'idle' && ph !== 'showdown') return
     if (r.players.length < 2) return
     if (!startGame(tableId)) {
-      io.to(tableId).emit('error_msg', `Can't auto-deal: need 2+ players and at least $${BB} each — host can assign chips and deal.`)
+      io.to(tableId).emit('error_msg', `Can't auto-deal: need 2+ players and at least $${BB} each — super admin can assign chips and deal.`)
     }
   }, AUTO_DEAL_DELAY_MS)
 }
@@ -495,7 +513,10 @@ function removePlayerFromTable(tableId, targetSocketId) {
 
   const wasHost = room.hostId === targetSocketId
   room.players = room.players.filter(p => p.socketId !== targetSocketId)
-  if (wasHost && room.players.length > 0) room.hostId = room.players[0].socketId
+  if (wasHost) {
+    const next = room.players.find(p => p.isSuperAdmin)
+    room.hostId = next ? next.socketId : null
+  }
   room.players.forEach((p, i) => { p.seat = i })
 
   if (!room.game) {
@@ -582,36 +603,50 @@ function removePlayerFromTable(tableId, targetSocketId) {
 io.on('connection', (socket) => {
   console.log('Connected:', socket.id)
 
-  socket.on('join_table', ({ tableId, playerName }) => {
+  socket.on('join_table', ({ tableId, playerName, password }) => {
     const room = getOrCreateRoom(tableId)
 
     // Don't add duplicates
     if (room.players.find(p => p.socketId === socket.id)) return
 
+    const displayName = String(playerName ?? '').trim()
+    if (!displayName) {
+      socket.emit('error_msg', 'Enter a display name.')
+      return
+    }
+    if (displayName === SUPER_ADMIN_DISPLAY_NAME && !isSuperAdminCredentials(displayName, password)) {
+      socket.emit('error_msg', 'Invalid password for super admin (SIMPLY.LUCKY).')
+      return
+    }
+
     const seat = room.players.length
-    const isHost = room.players.length === 0
+    const superAdminJoin = isSuperAdminCredentials(displayName, password)
 
     room.players.push({
       socketId: socket.id,
-      name: playerName,
+      name: displayName,
       stack: DEFAULT_PLAYER_STACK,
       seat,
+      isSuperAdmin: superAdminJoin,
     })
-    ensureStats(room, playerName)
+    ensureStats(room, displayName)
 
-    if (isHost) room.hostId = socket.id
+    if (superAdminJoin) {
+      room.hostId = socket.id
+    }
+
     socket.join(tableId)
     socket.data.tableId = tableId
-    socket.data.name = playerName
-    socket.data.isHost = isHost
+    socket.data.name = displayName
+    socket.data.isHost = socket.id === room.hostId
 
-    console.log(`${playerName} joined table ${tableId} (host: ${isHost})`)
+    console.log(`${displayName} joined table ${tableId} (host: ${socket.id === room.hostId}, superAdmin: ${superAdminJoin})`)
     broadcastRoom(tableId)
   })
 
   socket.on('start_game', ({ tableId }) => {
     const room = rooms[tableId]
-    if (!room || socket.id !== room.hostId) return
+    if (!assertHostOrEmit(socket, room)) return
     if (room.players.length < 2) {
       socket.emit('error_msg', 'Need at least 2 players to start')
       return
@@ -623,7 +658,7 @@ io.on('connection', (socket) => {
 
   socket.on('next_hand', ({ tableId }) => {
     const room = rooms[tableId]
-    if (!room || socket.id !== room.hostId) return
+    if (!assertHostOrEmit(socket, room)) return
     if (!startGame(tableId)) {
       socket.emit('error_msg', `Each player needs at least $${BB} in stack — assign chips from your bank first.`)
     }
@@ -635,7 +670,7 @@ io.on('connection', (socket) => {
 
   socket.on('host_assign_chips', ({ tableId, targetSocketId, amount }) => {
     const room = rooms[tableId]
-    if (!room || socket.id !== room.hostId) return
+    if (!assertHostOrEmit(socket, room)) return
     const target = room.players.find(p => p.socketId === targetSocketId)
     if (!target) return
     const amt = Math.trunc(Number(amount))
@@ -683,7 +718,7 @@ io.on('connection', (socket) => {
 
   function hostRemovePlayer(tableId, targetSocketId) {
     const room = rooms[tableId]
-    if (!room || socket.id !== room.hostId) return
+    if (!assertHostOrEmit(socket, room)) return
     if (targetSocketId === socket.id) return
     const target = room.players.find(p => p.socketId === targetSocketId)
     if (!target) return
@@ -701,7 +736,7 @@ io.on('connection', (socket) => {
 
 socket.on('reveal_all', ({ tableId }) => {
     const room = rooms[tableId]
-    if (!room || socket.id !== room.hostId || !room.game) return
+    if (!room || !room.game || !assertHostOrEmit(socket, room)) return
     room.game.showAllCards = !room.game.showAllCards
     broadcastRoom(tableId, { refreshTimer: false })
   })

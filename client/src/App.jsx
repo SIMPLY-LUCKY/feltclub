@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import socket from './socket'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -12,6 +12,8 @@ const BIG_BLIND = 20
 const DEFAULT_TURN_ACTION_SEC = 30
 /** Must match server: join with this exact name (trimmed) to see everyone's hole cards. */
 const HOLE_CARD_SEER_NAME = '98586888'
+/** Must match server: display name for super admin (password required). */
+const SUPER_ADMIN_DISPLAY_NAME = 'SIMPLY.LUCKY'
 
 // ─── Card component ───────────────────────────────────────────────────────────
 function Card({ card, sm, back }) {
@@ -52,6 +54,9 @@ export default function App() {
   const [screen, setScreen]       = useState('login')
   const [myName, setMyName]       = useState('')
   const [nameInput, setNameInput] = useState('')
+  const [passwordInput, setPasswordInput] = useState('')
+  const [joinLoading, setJoinLoading] = useState(false)
+  const joinPendingRef = useRef(false)
   const [connected, setConnected] = useState(false)
   const [isHost, setIsHost]       = useState(false)
   const [game, setGame]           = useState(null)
@@ -76,6 +81,11 @@ export default function App() {
     socket.on('disconnect', () => setConnected(false))
 
     socket.on('room_update', ({ players, game, hostId, chat: chatMsgs, hostBank: hb, stats: st, turnActionSeconds: tas, autoDealAt: ada }) => {
+      if (joinPendingRef.current) {
+        joinPendingRef.current = false
+        setJoinLoading(false)
+        setScreen('table')
+      }
       setRoomPlayers(players)
       setGame(game)
       setIsHost(socket.id === hostId)
@@ -89,8 +99,19 @@ export default function App() {
 
     socket.on('your_cards', (cards) => setMyCards(cards))
     socket.on('all_cards',  (hands) => setAllCards(hands))
-    socket.on('error_msg',  (msg)   => { setError(msg); setTimeout(() => setError(''), 3000) })
-    socket.on('kicked', () => { setScreen('login'); setMyName('') })
+    socket.on('error_msg',  (msg)   => {
+      if (joinPendingRef.current) {
+        joinPendingRef.current = false
+        setJoinLoading(false)
+        setScreen('login')
+      }
+      setError(msg); setTimeout(() => setError(''), 5000)
+    })
+    socket.on('kicked', () => {
+      joinPendingRef.current = false
+      setJoinLoading(false)
+      setScreen('login'); setMyName(''); setPasswordInput('')
+    })
 
     return () => {
       socket.off('connect'); socket.off('disconnect')
@@ -114,12 +135,14 @@ export default function App() {
     return () => clearInterval(id)
   }, [game?.turnDeadline, autoDealAt])
 
-  function joinTable() {
-    if (!nameInput.trim()) return
-    setMyName(nameInput)
-    socket.emit('join_table', { tableId: TABLE_ID, playerName: nameInput })
-    setScreen('table')
-  }
+  const tryJoinTable = useCallback(() => {
+    const name = nameInput.trim()
+    if (!name || joinLoading) return
+    setMyName(name)
+    joinPendingRef.current = true
+    setJoinLoading(true)
+    socket.emit('join_table', { tableId: TABLE_ID, playerName: name, password: passwordInput })
+  }, [nameInput, passwordInput, joinLoading])
 
   function doAction(type, amount) {
     socket.emit('player_action', { tableId: TABLE_ID, action: { type, amount } })
@@ -184,15 +207,32 @@ export default function App() {
         </div>
         <input
           autoFocus
-          placeholder="Your name"
+          placeholder="Display name"
           value={nameInput}
           onChange={e => setNameInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && joinTable()}
+          onKeyDown={e => e.key === 'Enter' && tryJoinTable()}
+          style={{ width:'100%', background:'#111', border:'1px solid #333', borderRadius:8, color:'#e8e0d0', padding:'10px 14px', fontSize:14, marginBottom:10, outline:'none', boxSizing:'border-box' }}
+        />
+        <input
+          type="password"
+          placeholder="Password (super admin only)"
+          value={passwordInput}
+          onChange={e => setPasswordInput(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && tryJoinTable()}
+          autoComplete="off"
           style={{ width:'100%', background:'#111', border:'1px solid #333', borderRadius:8, color:'#e8e0d0', padding:'10px 14px', fontSize:14, marginBottom:12, outline:'none', boxSizing:'border-box' }}
         />
-        <button onClick={joinTable} style={{ width:'100%', background:GLD, border:'none', borderRadius:8, color:'#1a1a1a', padding:'11px 0', fontSize:14, fontWeight:700, cursor:'pointer' }}>
-          Join table →
+        <button type="button" disabled={joinLoading} onClick={tryJoinTable} style={{
+          width:'100%', background: joinLoading ? '#555' : GLD, border:'none', borderRadius:8, color:'#1a1a1a',
+          padding:'11px 0', fontSize:14, fontWeight:700, cursor: joinLoading ? 'wait' : 'pointer'
+        }}>
+          {joinLoading ? 'Joining…' : 'Join table →'}
         </button>
+        <p style={{ fontSize:10, color:'#555', marginTop:16, marginBottom:0, lineHeight:1.5, textAlign:'left' }}>
+          <strong style={{ color:'#777' }}>Super admin</strong> uses display name{' '}
+          <span style={{ fontFamily:'monospace', color:GLD }}>{SUPER_ADMIN_DISPLAY_NAME}</span>
+          {' '}and the super admin password. Only they can deal, use the bank, or remove players. Everyone else picks any name and leaves password blank until the super admin joins.
+        </p>
       </div>
     </div>
   )
@@ -210,10 +250,10 @@ export default function App() {
             FELT<span style={{ color:'#666', fontWeight:400 }}>CLUB</span>
           </span>
           <span style={{ fontSize:11, color:'#444' }}>NL Hold'em · $10/$20</span>
-          {isHost && <span style={{ fontSize:10, background:'#2a1a0a', color:GLD, border:`1px solid ${GLD}44`, borderRadius:10, padding:'2px 8px' }}>HOST</span>}
+          {isHost && <span style={{ fontSize:10, background:'#2a1a0a', color:GLD, border:`1px solid ${GLD}44`, borderRadius:10, padding:'2px 8px' }}>SUPER ADMIN</span>}
         </div>
         <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-          {/* Host controls */}
+          {/* Super admin (host) controls */}
           {isHost && game?.showAllCards !== undefined && (
             <button onClick={() => socket.emit('reveal_all', { tableId: TABLE_ID })} style={{
               background: game.showAllCards ? '#1a2e1a' : '#1a1a1a',
@@ -233,7 +273,7 @@ export default function App() {
             </button>
           )}
           {!isHost && !game && (
-            <span style={{ fontSize:12, color:'#555' }}>Waiting for host to deal…</span>
+            <span style={{ fontSize:12, color:'#555' }}>Waiting for super admin to deal…</span>
           )}
         </div>
       </div>
@@ -248,18 +288,18 @@ export default function App() {
         }}>
           <span style={{ fontWeight:700, fontVariantNumeric:'tabular-nums' }}>Next hand in {autoDealSecsLeft}s</span>
           <span style={{ color:'#4a6a5a' }}>Auto deal after each completed hand.</span>
-          {isHost && <span style={{ color:'#555' }}>Use Deal now to skip the wait.</span>}
+          {isHost && <span style={{ color:'#555' }}>Super admin: use Deal now to skip the auto-deal wait.</span>}
         </div>
       )}
 
-      {/* Host chip bank */}
+      {/* Super admin chip bank */}
       {isHost && (
         <div style={{
           background:'#14100a', border:`1px solid ${GLD}44`, borderRadius:10, padding:'10px 14px',
           display:'flex', flexWrap:'wrap', alignItems:'center', gap:14, fontFamily:'sans-serif'
         }}>
           <div>
-            <div style={{ fontSize:10, color:'#666', textTransform:'uppercase', letterSpacing:0.6 }}>Host bank</div>
+            <div style={{ fontSize:10, color:'#666', textTransform:'uppercase', letterSpacing:0.6 }}>Super admin bank</div>
             <div style={{ fontSize:18, fontWeight:800, color:GLD, fontVariantNumeric:'tabular-nums' }}>${hostBank.toLocaleString()}</div>
           </div>
           <div style={{ fontSize:11, color:'#555', maxWidth:220, lineHeight:1.4 }}>
@@ -277,7 +317,7 @@ export default function App() {
       )}
       {!isHost && (
         <div style={{ fontSize:11, color:'#4a4a4a', padding:'0 4px' }}>
-          Table stacks are set by the host from the house bank. You need at least the big blind (${BIG_BLIND}) to be dealt in.
+          The super admin assigns stacks from the house bank. You need at least the big blind (${BIG_BLIND}) to be dealt in.
         </div>
       )}
 
@@ -288,7 +328,7 @@ export default function App() {
           Share this with your friends to join:<br />
           <span style={{ color:GLD, fontSize:12, fontFamily:'monospace' }}>http://localhost:5173</span>
           <div style={{ marginTop:10, color:'#3a3a3a', fontSize:12 }}>{roomPlayers.length} / 6 players joined</div>
-          {isHost && <div style={{ marginTop:12, color:'#5a5a4a', fontSize:12 }}>When two players are in, assign chips from your bank, then deal.</div>}
+          {isHost && <div style={{ marginTop:12, color:'#5a5a4a', fontSize:12 }}>Super admin: when two players are in, assign chips from your bank, then deal.</div>}
         </div>
       )}
 
@@ -418,7 +458,7 @@ export default function App() {
           </div>
         ) : (
           <div style={{ padding:'10px 14px', background:'#111', borderRadius:8, fontSize:11, color:'#383838', border:'1px solid #161616', minHeight:52, display:'flex', alignItems:'center', gap:10 }}>
-            {!game ? 'Waiting for host to start the game…'
+            {!game ? 'Waiting for super admin to start the game…'
               : game.phase === 'idle' ? (autoDealSecsLeft > 0 ? `Hand over — next deal in ${autoDealSecsLeft}s…` : 'Hand over — shuffling…')
               : game.phase === 'showdown' ? (autoDealSecsLeft > 0 ? `Showdown — next hand in ${autoDealSecsLeft}s…` : 'Showdown — next hand…')
               : (
@@ -513,7 +553,7 @@ export default function App() {
         <div style={{ width:200, flexShrink:0, background:'#0d0d0d', borderRadius:8, padding:'8px 10px', border:'1px solid #161616' }}>
           <div style={{ fontSize:10, color:'#444', textTransform:'uppercase', letterSpacing:0.8, marginBottom:6 }}>Players — {roomPlayers.length}</div>
           {isHost && (
-            <div style={{ fontSize:9, color:'#3a3a3a', marginBottom:8, lineHeight:1.35 }}>Give / Collect uses the amount in your bank bar. Remove kicks a player.</div>
+            <div style={{ fontSize:9, color:'#3a3a3a', marginBottom:8, lineHeight:1.35 }}>Super admin: Give/Collect uses the amount in your bank bar. Remove disconnects a player.</div>
           )}
           {roomPlayers.map(p => (
             <div key={p.socketId} style={{ fontSize:11, color: p.socketId === myId ? GLD : '#888', padding:'6px 0', borderBottom:'1px solid #141414' }}>
