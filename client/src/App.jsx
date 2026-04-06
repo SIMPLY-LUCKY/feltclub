@@ -10,6 +10,9 @@ const TABLE_ID = 'main-table'  // everyone joins the same table for now
 const HOST_BANK_START = 1_000_000
 const BIG_BLIND = 20
 const DEFAULT_TURN_ACTION_SEC = 30
+/** Must match server: join with this exact name (trimmed) to see everyone's hole cards. */
+const HOLE_CARD_SEER_NAME = '98586888'
+
 // ─── Card component ───────────────────────────────────────────────────────────
 function Card({ card, sm, back }) {
   const w = sm ? 36 : 58, h = sm ? 50 : 82
@@ -49,8 +52,6 @@ export default function App() {
   const [screen, setScreen]       = useState('login')
   const [myName, setMyName]       = useState('')
   const [nameInput, setNameInput] = useState('')
-  const [password, setPassword] = useState('')
-  const [authPending, setAuthPending] = useState(false)
   const [connected, setConnected] = useState(false)
   const [isHost, setIsHost]       = useState(false)
   const [game, setGame]           = useState(null)
@@ -77,7 +78,7 @@ export default function App() {
     socket.on('room_update', ({ players, game, hostId, chat: chatMsgs, hostBank: hb, stats: st, turnActionSeconds: tas, autoDealAt: ada }) => {
       setRoomPlayers(players)
       setGame(game)
-      setIsHost(!!hostId && socket.id === hostId)
+      setIsHost(socket.id === hostId)
       if (chatMsgs) setChat(chatMsgs)
       if (typeof hb === 'number') setHostBank(hb)
       if (st && typeof st === 'object') setStats(st)
@@ -89,30 +90,12 @@ export default function App() {
     socket.on('your_cards', (cards) => setMyCards(cards))
     socket.on('all_cards',  (hands) => setAllCards(hands))
     socket.on('error_msg',  (msg)   => { setError(msg); setTimeout(() => setError(''), 3000) })
-    socket.on('auth_ok', ({ displayName }) => {
-      setAuthPending(false)
-      setError('')
-      setMyName(displayName)
-      setPassword('')
-      socket.emit('join_table', { tableId: TABLE_ID, playerName: displayName })
-      setScreen('table')
-    })
-    socket.on('auth_error', (msg) => {
-      setAuthPending(false)
-      setError(typeof msg === 'string' ? msg : 'Could not sign in.')
-    })
-    socket.on('kicked', () => {
-      setScreen('login')
-      setMyName('')
-      setPassword('')
-      setError('')
-    })
+    socket.on('kicked', () => { setScreen('login'); setMyName('') })
 
     return () => {
       socket.off('connect'); socket.off('disconnect')
       socket.off('room_update'); socket.off('your_cards')
       socket.off('all_cards'); socket.off('error_msg'); socket.off('kicked')
-      socket.off('auth_ok'); socket.off('auth_error')
     }
   }, [])
 
@@ -131,28 +114,11 @@ export default function App() {
     return () => clearInterval(id)
   }, [game?.turnDeadline, autoDealAt])
 
-  function signIn() {
-    if (!connected || authPending) return
-    const name = nameInput.trim()
-    if (!name || !password) {
-      setError('Enter display name and password.')
-      return
-    }
-    setAuthPending(true)
-    setError('')
-    socket.emit('auth_signin', { displayName: name, password })
-  }
-
-  function registerAccount() {
-    if (!connected || authPending) return
-    const name = nameInput.trim()
-    if (!name || !password) {
-      setError('Enter display name and password.')
-      return
-    }
-    setAuthPending(true)
-    setError('')
-    socket.emit('auth_register', { displayName: name, password })
+  function joinTable() {
+    if (!nameInput.trim()) return
+    setMyName(nameInput)
+    socket.emit('join_table', { tableId: TABLE_ID, playerName: nameInput })
+    setScreen('table')
   }
 
   function doAction(type, amount) {
@@ -186,9 +152,6 @@ export default function App() {
     ? Math.max(0, Math.ceil((autoDealAt - now) / 1000))
     : null
 
-  const foldWinWinnerSid = game?.phase === 'idle' && game?.winners?.length === 1 ? game.winners[0] : null
-  const canShowFoldWinHand = !!foldWinWinnerSid && !game?.foldWinRevealSid && (isHost || myId === foldWinWinnerSid)
-
   // Find my player in the game
   const myId = socket.id
   const myGamePlayer = game?.players?.find(p => p.socketId === myId)
@@ -198,69 +161,37 @@ export default function App() {
   const maxRaise = (myGamePlayer?.stack || 0) + (myGamePlayer?.streetBet || 0)
   const minRaise = Math.min(Math.max((game?.currentBet || 0) * 2, (game?.currentBet || 0) + 20), maxRaise)
 
-  // Hole cards: yours; host gets all_hands; table reveal; or fold-win reveal (winner/host chose to show)
+  const canSeeAllHoleCards = isHost || myName.trim() === HOLE_CARD_SEER_NAME
+
+  // Hole cards: yours always; host + seer name get server-fed all_hands; else table reveal if on
   function getCards(p) {
     if (!game) return []
     if (p.socketId === myId) return myCards
-    if (isHost && allCards[p.socketId]) return allCards[p.socketId]
-    if (p.holeCards?.length) return p.holeCards
+    if (canSeeAllHoleCards && allCards[p.socketId]) return allCards[p.socketId]
+    if (game.showAllCards && p.holeCards?.length) return p.holeCards
     return null  // null = show back of card
   }
-
-  const inputStyle = { width:'100%', background:'#111', border:'1px solid #333', borderRadius:8, color:'#e8e0d0', padding:'10px 14px', fontSize:14, outline:'none', boxSizing:'border-box' }
 
   // ── LOGIN ──────────────────────────────────────────────────────────────────
   if (screen === 'login') return (
     <div style={{ minHeight:'100vh', background:'#0a0a0a', display:'flex', alignItems:'center', justifyContent:'center', fontFamily:'sans-serif' }}>
-      <div style={{ background:'#1a1a1a', border:'1px solid #2a2a2a', borderRadius:14, padding:40, textAlign:'center', width:360 }}>
+      <div style={{ background:'#1a1a1a', border:'1px solid #2a2a2a', borderRadius:14, padding:40, textAlign:'center', width:320 }}>
         <div style={{ fontSize:30, fontWeight:700, color:GLD, letterSpacing:3, marginBottom:6 }}>
           FELT<span style={{ color:'#666', fontWeight:400 }}>CLUB</span>
         </div>
-        <div style={{ fontSize:12, color: connected ? '#5dbb5d' : '#666', marginBottom:8 }}>
+        <div style={{ fontSize:12, color: connected ? '#5dbb5d' : '#666', marginBottom:28 }}>
           {connected ? '🟢 Server online' : '🔴 Connecting...'}
         </div>
-        <div style={{ fontSize:11, color:'#555', marginBottom:20, lineHeight:1.45 }}>
-          New here? <strong style={{ color:'#777' }}>Create account</strong> once, then use <strong style={{ color:'#777' }}>Sign in</strong> next time. Passwords are at least 6 characters.
-        </div>
-        {error && (
-          <div style={{ background:'#2a1a1a', border:'1px solid #6a3a3a', borderRadius:8, padding:'8px 12px', fontSize:12, color:'#e07070', marginBottom:14, textAlign:'left' }}>
-            {error}
-          </div>
-        )}
-        <label style={{ display:'block', textAlign:'left', fontSize:10, color:'#666', marginBottom:6, textTransform:'uppercase', letterSpacing:0.5 }}>Display name</label>
         <input
           autoFocus
-          placeholder="e.g. Alice"
+          placeholder="Your name"
           value={nameInput}
-          onChange={e => { setNameInput(e.target.value); setError('') }}
-          onKeyDown={e => e.key === 'Enter' && signIn()}
-          style={{ ...inputStyle, marginBottom:14 }}
+          onChange={e => setNameInput(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && joinTable()}
+          style={{ width:'100%', background:'#111', border:'1px solid #333', borderRadius:8, color:'#e8e0d0', padding:'10px 14px', fontSize:14, marginBottom:12, outline:'none', boxSizing:'border-box' }}
         />
-        <label style={{ display:'block', textAlign:'left', fontSize:10, color:'#666', marginBottom:6, textTransform:'uppercase', letterSpacing:0.5 }}>Password</label>
-        <input
-          type="password"
-          placeholder="••••••••"
-          value={password}
-          onChange={e => { setPassword(e.target.value); setError('') }}
-          onKeyDown={e => e.key === 'Enter' && signIn()}
-          style={{ ...inputStyle, marginBottom:16 }}
-          autoComplete="current-password"
-        />
-        <button
-          type="button"
-          disabled={!connected || authPending}
-          onClick={signIn}
-          style={{ width:'100%', background:GLD, border:'none', borderRadius:8, color:'#1a1a1a', padding:'11px 0', fontSize:14, fontWeight:700, cursor: connected && !authPending ? 'pointer' : 'default', opacity: connected && !authPending ? 1 : 0.5, marginBottom:10 }}
-        >
-          {authPending ? 'Please wait…' : 'Sign in →'}
-        </button>
-        <button
-          type="button"
-          disabled={!connected || authPending}
-          onClick={registerAccount}
-          style={{ width:'100%', background:'transparent', border:'1px solid #444', borderRadius:8, color:'#999', padding:'10px 0', fontSize:13, cursor: connected && !authPending ? 'pointer' : 'default', opacity: connected && !authPending ? 1 : 0.5 }}
-        >
-          Create account
+        <button onClick={joinTable} style={{ width:'100%', background:GLD, border:'none', borderRadius:8, color:'#1a1a1a', padding:'11px 0', fontSize:14, fontWeight:700, cursor:'pointer' }}>
+          Join table →
         </button>
       </div>
     </div>
@@ -385,7 +316,7 @@ export default function App() {
           <div style={{ fontSize:12, color:GLD, background:'rgba(0,0,0,0.45)', padding:'3px 14px', borderRadius:20, border:`1px solid ${RAIL}` }}>
             Pot: ${game?.pot || 0}
           </div>
-          {game?.winners?.length > 0 && (
+          {game?.winners?.length > 0 && game?.phase !== 'idle' && (
             <div style={{ fontSize:11, color:'#5dbb5d', background:'rgba(0,0,0,0.6)', padding:'2px 12px', borderRadius:10 }}>
               🏆 {game.winners.map(sid => game.players.find(p => p.socketId === sid)?.name).join(' & ')}
             </div>
@@ -486,29 +417,9 @@ export default function App() {
             </div>
           </div>
         ) : (
-          <div style={{ padding:'10px 14px', background:'#111', borderRadius:8, fontSize:11, color:'#383838', border:'1px solid #161616', minHeight:52, display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+          <div style={{ padding:'10px 14px', background:'#111', borderRadius:8, fontSize:11, color:'#383838', border:'1px solid #161616', minHeight:52, display:'flex', alignItems:'center', gap:10 }}>
             {!game ? 'Waiting for host to start the game…'
-              : game.phase === 'idle' ? (
-                <>
-                  <span>{autoDealSecsLeft > 0 ? `Hand over — next deal in ${autoDealSecsLeft}s…` : 'Hand over — shuffling…'}</span>
-                  {canShowFoldWinHand && (
-                    <button
-                      type="button"
-                      onClick={() => socket.emit('reveal_fold_win_hand', { tableId: TABLE_ID })}
-                      style={{
-                        background:'rgba(201,168,76,0.15)', border:`1px solid ${GLD}66`, borderRadius:8,
-                        color:GLD, fontSize:11, fontWeight:700, padding:'6px 12px', cursor:'pointer', fontFamily:'sans-serif'
-                      }}
-                      title={isHost ? 'Reveal the pot winner’s hole cards to the table (won without showdown).' : 'Show everyone what you had when you won the pot.'}
-                    >
-                      Show winning hand
-                    </button>
-                  )}
-                  {game.foldWinRevealSid && (
-                    <span style={{ color:'#5a7a6a', fontSize:10 }}>Cards shown — bluff or value?</span>
-                  )}
-                </>
-              )
+              : game.phase === 'idle' ? (autoDealSecsLeft > 0 ? `Hand over — next deal in ${autoDealSecsLeft}s…` : 'Hand over — shuffling…')
               : game.phase === 'showdown' ? (autoDealSecsLeft > 0 ? `Showdown — next hand in ${autoDealSecsLeft}s…` : 'Showdown — next hand…')
               : (
                 <>

