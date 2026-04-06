@@ -293,6 +293,13 @@ function syncIdleGameWithRoom(room) {
   })
 }
 
+/** In-hand hole cards for this socket (empty when idle / no game). Bundled with room_update so the client never misses them. */
+function privateHoleCardsForSocket(game, socketId) {
+  if (!game || game.phase === 'idle') return []
+  const p = game.players.find(x => x.socketId === socketId)
+  return Array.isArray(p?.holeCards) ? p.holeCards : []
+}
+
 function broadcast(tableId) {
   const room = getRoom(tableId)
   if (!room) return
@@ -327,6 +334,7 @@ function broadcast(tableId) {
     io.to(rp.socketId).emit('room_update', {
       ...shared,
       game: sanitizeGame(g, rp),
+      yourHoleCards: privateHoleCardsForSocket(g, rp.socketId),
     })
   }
 
@@ -638,10 +646,6 @@ io.on('connection', socket => {
     const target = room.players.find(p => p.socketId === targetSocketId)
     if (!target) {
       socket.emit('error_msg', 'That player is not at this table.')
-      return
-    }
-    if (target.unlimitedChips) {
-      socket.emit('error_msg', 'Use chip controls on seated players, not the host seat.')
       return
     }
     const amt = Math.trunc(Number(amount))

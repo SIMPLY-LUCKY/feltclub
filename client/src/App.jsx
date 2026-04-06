@@ -6,8 +6,8 @@ const MAX_PLAYER_OPTIONS = [2, 4, 6, 9]
 
 /** Board (community) and hole card layouts in CSS px at scale 1. */
 const CARD_LAYOUT = {
-  board: { w: 52, h: 72, rank: 18, suit: 14, radius: 6, suitMarginTop: 5 },
-  hole: { w: 36, h: 50, rank: 14, suit: 12, radius: 5, suitMarginTop: 4 },
+  board: { w: 65, h: 90, rank: 22, suit: 18, radius: 6, suitMarginTop: 6 },
+  hole: { w: 52, h: 72, rank: 18, suit: 14, radius: 6, suitMarginTop: 4 },
 }
 const BOARD_CARD_GAP = 10
 const HOLE_CARD_GAP = 6
@@ -57,8 +57,8 @@ function Card({ card, variant = 'hole', back, fourColor }) {
           height: h,
           borderRadius: br,
           background: 'linear-gradient(145deg,#2e3d52,#1a2433)',
-          border: '2px solid rgba(255,255,255,0.35)',
-          boxShadow: '0 0 0 1px rgba(0,0,0,0.2), 0 3px 10px rgba(0,0,0,0.35)',
+          border: '1px solid rgba(255,255,255,0.28)',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
           flexShrink: 0,
           boxSizing: 'border-box',
         }}
@@ -75,23 +75,23 @@ function Card({ card, variant = 'hole', back, fourColor }) {
         height: h,
         borderRadius: br,
         boxSizing: 'border-box',
-        background: '#f7f4ec',
-        border: '2px solid #ffffff',
-        boxShadow: '0 0 0 1px rgba(0,0,0,0.12), 0 4px 14px rgba(0,0,0,0.28)',
+        background: '#ffffff',
+        border: '1px solid #ccc',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
         color: col,
-        fontWeight: 800,
+        fontWeight: 700,
         fontSize: L.rank,
         lineHeight: 1,
         flexShrink: 0,
         userSelect: 'none',
       }}
     >
-      <span>{rankStr(card.r)}</span>
-      <span style={{ fontSize: L.suit, lineHeight: 1.1, fontWeight: 800, marginTop: L.suitMarginTop }}>
+      <span style={{ fontWeight: 700 }}>{rankStr(card.r)}</span>
+      <span style={{ fontSize: L.suit, lineHeight: 1.1, fontWeight: 700, marginTop: L.suitMarginTop }}>
         {suitSym[card.s]}
       </span>
     </div>
@@ -161,7 +161,6 @@ export default function App() {
   const [smallBlind, setSmallBlind] = useState(10)
   const [bigBlind, setBigBlind] = useState(20)
 
-  const [myId, setMyId] = useState(socket.id)
   const [myName, setMyName] = useState('')
   const [myCards, setMyCards] = useState([])
   const [allHoleCards, setAllHoleCards] = useState(null)
@@ -211,7 +210,6 @@ export default function App() {
   useEffect(() => {
     const onConnect = () => {
       setConnected(true)
-      setMyId(socket.id)
     }
     const onDisconnect = () => setConnected(false)
     socket.on('connect', onConnect)
@@ -283,6 +281,9 @@ export default function App() {
       const meRow = (payload.players || []).find(p => p.socketId === socket.id)
       isSuperAdminRef.current = !!meRow?.isSuperAdmin
       if (!meRow?.isSuperAdmin) setAllHoleCards(null)
+      if (Array.isArray(payload.yourHoleCards)) {
+        setMyCards(payload.yourHoleCards)
+      }
     }
     const onYour = cards => setMyCards(Array.isArray(cards) ? cards : [])
     const onAll = hands => {
@@ -346,12 +347,13 @@ export default function App() {
     return () => clearInterval(t)
   }, [game?.turnDeadline, autoDealAt])
 
-  const me = useMemo(() => roomPlayers.find(p => p.socketId === myId), [roomPlayers, myId])
+  const sid = socket.id
+  const me = useMemo(() => roomPlayers.find(p => p.socketId === sid), [roomPlayers, sid])
   const isHost = me?.isHost
   const isSuper = me?.isSuperAdmin
 
   const gamePlayers = game?.players || []
-  const myGameIdx = gamePlayers.findIndex(p => p.socketId === myId)
+  const myGameIdx = gamePlayers.findIndex(p => p.socketId === sid)
   const myTurn =
     game &&
     game.phase !== 'idle' &&
@@ -546,7 +548,19 @@ export default function App() {
     const gp = mergedGamePlayers(slotPlayer.socketId)
     const holeN = gp?.holeCount ?? VARIANT_HOLES[game.variant] ?? 2
 
-    if (slotPlayer.socketId === myId) return myCards.length ? myCards : null
+    if (slotPlayer.socketId === sid) {
+      if (myCards.length) return myCards
+      if (
+        me?.isSuperAdmin &&
+        game.showAllCards &&
+        allHoleCards &&
+        Array.isArray(allHoleCards[slotPlayer.socketId]) &&
+        allHoleCards[slotPlayer.socketId].length
+      ) {
+        return allHoleCards[slotPlayer.socketId]
+      }
+      return null
+    }
     if (
       me?.isSuperAdmin &&
       game.showAllCards &&
@@ -1336,29 +1350,31 @@ export default function App() {
                       </div>
                     </div>
                   </div>
-                  <div
-                    style={{
-                      padding: '10px 16px',
-                      borderRadius: 12,
-                      background: winner ? 'rgba(40,80,40,0.85)' : active ? 'rgba(40,60,90,0.9)' : 'rgba(0,0,0,0.5)',
-                      border: `2px solid ${winner ? '#5a8a5a' : active ? '#6eb5ff' : '#2a4058'}`,
-                      fontSize: 20,
-                      maxWidth: 'min(96vw, 1200px)',
-                      textAlign: 'center',
-                      color: '#e8eef8',
-                    }}
-                  >
-                    <div style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {slot ? slot.name : ''}
-                      {slot?.socketId === myId ? ' · you' : ''}
+                  {slot && (
+                    <div
+                      style={{
+                        padding: '10px 16px',
+                        borderRadius: 12,
+                        background: winner ? 'rgba(40,80,40,0.85)' : active ? 'rgba(40,60,90,0.9)' : 'rgba(0,0,0,0.5)',
+                        border: `2px solid ${winner ? '#5a8a5a' : active ? '#6eb5ff' : '#2a4058'}`,
+                        fontSize: 20,
+                        maxWidth: 'min(96vw, 1200px)',
+                        textAlign: 'center',
+                        color: '#e8eef8',
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {slot.name}
+                        {slot.socketId === sid ? ' · you' : ''}
+                      </div>
+                      <div style={{ fontSize: 17, color: '#9ab8d8', fontVariantNumeric: 'tabular-nums' }}>
+                        {slot.unlimitedChips ? '∞' : `$${slot.stack ?? 0}`}
+                      </div>
+                      {gp?.handLabel && (
+                        <div style={{ fontSize: 15, color: '#a8d8a8' }}>{gp.handLabel}</div>
+                      )}
                     </div>
-                    <div style={{ fontSize: 17, color: '#9ab8d8', fontVariantNumeric: 'tabular-nums' }}>
-                      {slot?.unlimitedChips ? '∞' : `$${slot?.stack ?? 0}`}
-                    </div>
-                    {gp?.handLabel && (
-                      <div style={{ fontSize: 15, color: '#a8d8a8' }}>{gp.handLabel}</div>
-                    )}
-                  </div>
+                  )}
                 </div>
               )
             })}
@@ -1477,6 +1493,24 @@ export default function App() {
                   color: '#e8eef8',
                 }}
               />
+              <button
+                type="button"
+                onClick={() => assignChips(sid, 1)}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  marginBottom: 0,
+                  borderRadius: 8,
+                  border: '1px solid #3a6a9a',
+                  background: 'rgba(40,90,130,0.35)',
+                  color: '#b8d8ff',
+                  fontWeight: 700,
+                  fontSize: 13,
+                  cursor: 'pointer',
+                }}
+              >
+                Add to my stack
+              </button>
             </div>
           )}
 
@@ -1551,7 +1585,7 @@ export default function App() {
                       flexShrink: 0,
                     }}
                   />
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', color: p.socketId === myId ? '#8bc4ff' : '#c8d4e0' }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', color: p.socketId === sid ? '#8bc4ff' : '#c8d4e0' }}>
                     <span style={{ color: '#5a6a7a', fontSize: 10, marginRight: 4 }}>#{typeof p.seat === 'number' ? p.seat + 1 : '?'}</span>
                     {p.name}
                     {p.isHost ? ' · host' : ''}
@@ -1561,7 +1595,7 @@ export default function App() {
                   <span style={{ fontVariantNumeric: 'tabular-nums', color: '#7a8a9a' }}>
                     {p.unlimitedChips ? '∞' : `$${p.stack ?? 0}`}
                   </span>
-                  {isHost && p.socketId !== myId && (
+                  {isHost && p.socketId !== sid && (
                     <>
                       <button type="button" onClick={() => assignChips(p.socketId, 1)} style={miniBtn}>
                         +
