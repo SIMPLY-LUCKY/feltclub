@@ -72,6 +72,8 @@ export default function App() {
     socket.on('all_cards',  (hands) => setAllCards(hands))
     socket.on('error_msg',  (msg)   => { setError(msg); setTimeout(() => setError(''), 3000) })
 
+socket.on('kicked', () => { setScreen('login'); setMyName('') })
+
     return () => {
       socket.off('connect'); socket.off('disconnect')
       socket.off('room_update'); socket.off('your_cards')
@@ -306,13 +308,16 @@ export default function App() {
         <div style={{ width:140, background:'#0d0d0d', borderRadius:8, padding:'8px 10px', border:'1px solid #161616' }}>
           <div style={{ fontSize:10, color:'#444', textTransform:'uppercase', letterSpacing:0.8, marginBottom:6 }}>Online — {roomPlayers.length}</div>
           {roomPlayers.map(p => (
-            <div key={p.socketId} style={{ fontSize:11, color: p.socketId === myId ? GLD : '#666', padding:'2px 0', display:'flex', alignItems:'center', gap:5 }}>
-              <div style={{ width:5, height:5, borderRadius:'50%', background:'#5dbb5d', flexShrink:0 }} />
-              {p.name}{p.socketId === myId ? ' ✦' : ''}
-            </div>
-          ))}
-        </div>
-      </div>
+  <div key={p.socketId} style={{ fontSize:11, color: p.socketId === myId ? GLD : '#666', padding:'2px 0', display:'flex', alignItems:'center', gap:5, justifyContent:'space-between' }}>
+    <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+      <div style={{ width:5, height:5, borderRadius:'50%', background:'#5dbb5d', flexShrink:0 }} />
+      {p.name}{p.socketId === myId ? ' ✦' : ''}
     </div>
-  )
-}
+    {isHost && p.socketId !== myId && (
+      <button onClick={() => socket.emit('kick_player', { tableId: TABLE_ID, kickSocketId: p.socketId })}
+        style={{ background:'transparent', border:'1px solid #6a2a2a', borderRadius:4, color:'#c0392b', fontSize:9, padding:'1px 5px', cursor:'pointer', fontFamily:'sans-serif' }}>
+        ✕
+      </button>
+    )}
+  </div>
+))}

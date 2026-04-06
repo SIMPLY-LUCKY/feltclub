@@ -380,7 +380,16 @@ io.on('connection', (socket) => {
     handleAction(tableId, socket.id, action)
   })
 
-  socket.on('reveal_all', ({ tableId }) => {
+  socket.on('kick_player', ({ tableId, kickSocketId }) => {
+    const room = rooms[tableId]
+    if (!room || socket.id !== room.hostId) return
+    const target = room.players.find(p => p.socketId === kickSocketId)
+    if (!target) return
+    io.to(kickSocketId).emit('kicked')
+    io.sockets.sockets.get(kickSocketId)?.disconnect()
+  })
+
+socket.on('reveal_all', ({ tableId }) => {
     const room = rooms[tableId]
     if (!room || socket.id !== room.hostId || !room.game) return
     room.game.showAllCards = !room.game.showAllCards
