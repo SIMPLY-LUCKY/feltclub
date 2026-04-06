@@ -128,8 +128,9 @@ export default function App() {
   const [connected, setConnected] = useState(socket.connected)
   const [screen, setScreen] = useState('login')
   const [nameInput, setNameInput] = useState('')
-  const [pinInput, setPinInput] = useState('')
   const [joiningTable, setJoiningTable] = useState(false)
+  /** After a failed join/create, show PIN field for reserved display name (lobby only). */
+  const [showSuperPinField, setShowSuperPinField] = useState(false)
   const [tables, setTables] = useState([])
   const [onlineCount, setOnlineCount] = useState(0)
   const [tableId, setTableId] = useState(null)
@@ -174,6 +175,7 @@ export default function App() {
   const [now, setNow] = useState(Date.now())
 
   const logRef = useRef(null)
+  const screenRef = useRef(screen)
   const joinPending = useRef(false)
   /** Server is source of truth; ignore all_hole_cards unless this is true. */
   const isSuperAdminRef = useRef(false)
@@ -197,6 +199,14 @@ export default function App() {
   const maxHoleCards = VARIANT_HOLES[game?.variant ?? gameType] ?? 6
   const holeRowW = maxHoleCards * CARD_LAYOUT.hole.w + Math.max(0, maxHoleCards - 1) * HOLE_CARD_GAP
   const holeRowH = CARD_LAYOUT.hole.h
+
+  useEffect(() => {
+    screenRef.current = screen
+  }, [screen])
+
+  useEffect(() => {
+    if (screen === 'table') setShowSuperPinField(false)
+  }, [screen])
 
   useEffect(() => {
     const onConnect = () => {
@@ -290,6 +300,13 @@ export default function App() {
       }
       setJoiningTable(false)
       setError(msg)
+      if (
+        screenRef.current === 'lobby' &&
+        typeof msg === 'string' &&
+        (msg.includes('SIMPLY.LUCKY') || msg.toLowerCase().includes('super admin pin'))
+      ) {
+        setShowSuperPinField(true)
+      }
       setTimeout(() => setError(''), 5000)
     }
     const onKicked = () => {
@@ -362,8 +379,8 @@ export default function App() {
     const name = nameInput.trim()
     if (!name) return
     setMyName(name)
-    if (name === SUPER_ADMIN_NAME) setSavedSuperPin(pinInput.trim())
-    else setSavedSuperPin('')
+    setSavedSuperPin('')
+    setShowSuperPinField(false)
     setScreen('lobby')
   }
 
@@ -546,7 +563,6 @@ export default function App() {
   }
 
   if (screen === 'login') {
-    const showPin = nameInput.trim() === SUPER_ADMIN_NAME
     return (
       <div
         style={{
@@ -571,9 +587,29 @@ export default function App() {
           <h1 style={{ margin: '0 0 8px', fontSize: 28, letterSpacing: 3, color: '#6eb5ff' }}>
             FELT<span style={{ color: '#5a6a7a', fontWeight: 400 }}>CLUB</span>
           </h1>
-          <p style={{ margin: '0 0 24px', fontSize: 13, color: '#5a6570' }}>
-            {connected ? 'Connected to server' : 'Connecting…'}
-          </p>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              marginBottom: 24,
+            }}
+          >
+            <span
+              aria-hidden
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: '50%',
+                background: connected ? '#4caf50' : '#e53935',
+                flexShrink: 0,
+                boxShadow: connected ? '0 0 8px rgba(76,175,80,0.5)' : 'none',
+              }}
+            />
+            <span style={{ fontSize: 13, color: '#7a8a9a' }}>
+              {connected ? 'Connected to server' : 'Connecting…'}
+            </span>
+          </div>
           <input
             name="displayName"
             autoFocus
@@ -591,26 +627,6 @@ export default function App() {
               fontSize: 15,
             }}
           />
-          {showPin && (
-            <input
-              name="pin"
-              type="password"
-              placeholder="Super admin PIN (for all cards)"
-              value={pinInput}
-              onChange={e => setPinInput(e.target.value)}
-              autoComplete="off"
-              style={{
-                width: '100%',
-                padding: '12px 14px',
-                marginBottom: 12,
-                borderRadius: 10,
-                border: '1px solid #3a4a60',
-                background: '#0a0e14',
-                color: '#e8e4dc',
-                fontSize: 14,
-              }}
-            />
-          )}
           <button
             type="submit"
             disabled={!connected}
@@ -628,10 +644,6 @@ export default function App() {
           >
             Join lobby
           </button>
-          <p style={{ marginTop: 18, fontSize: 11, color: '#4a5560', lineHeight: 1.5 }}>
-            Display name <code style={{ color: '#6eb5ff' }}>{SUPER_ADMIN_NAME}</code> is reserved — you must
-            enter the super admin PIN to join with it (and you will see all hole cards during play).
-          </p>
         </form>
       </div>
     )
@@ -869,12 +881,52 @@ export default function App() {
               </p>
             </div>
             <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: 12, color: connected ? '#6abf69' : '#e57373' }}>
-                {connected ? 'Server connected' : 'Disconnected'}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'flex-end',
+                  gap: 8,
+                  fontSize: 12,
+                  color: '#7a8a9a',
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: '50%',
+                    background: connected ? '#4caf50' : '#e53935',
+                  }}
+                />
+                <span>{connected ? 'Connected' : 'Disconnected'}</span>
               </div>
               <div style={{ fontSize: 13, color: '#8ab8e8', marginTop: 4 }}>Online: {onlineCount}</div>
             </div>
           </div>
+
+          {myName.trim() === SUPER_ADMIN_NAME && showSuperPinField && (
+            <input
+              type="password"
+              autoComplete="off"
+              value={savedSuperPin}
+              onChange={e => setSavedSuperPin(e.target.value)}
+              placeholder="PIN"
+              style={{
+                width: '100%',
+                maxWidth: 360,
+                padding: '12px 14px',
+                marginBottom: 16,
+                borderRadius: 10,
+                border: '1px solid #3a4a60',
+                background: '#0a0e14',
+                color: '#e8e4dc',
+                fontSize: 15,
+                display: 'block',
+              }}
+            />
+          )}
 
           <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
             {isLobbyHost ? (
@@ -915,7 +967,12 @@ export default function App() {
             )}
             <button
               type="button"
-              onClick={() => setScreen('login')}
+              onClick={() => {
+                setNameInput(myName)
+                setSavedSuperPin('')
+                setShowSuperPinField(false)
+                setScreen('login')
+              }}
               style={{
                 padding: '12px 20px',
                 borderRadius: 10,
