@@ -10,9 +10,6 @@ const TABLE_ID = 'main-table'  // everyone joins the same table for now
 const HOST_BANK_START = 1_000_000
 const BIG_BLIND = 20
 const DEFAULT_TURN_ACTION_SEC = 30
-/** Must match server: join with this exact display name (trimmed) to be table host. */
-const HOST_PIN_NAME = '0802573'
-
 // ─── Card component ───────────────────────────────────────────────────────────
 function Card({ card, sm, back }) {
   const w = sm ? 36 : 58, h = sm ? 50 : 82
@@ -52,6 +49,8 @@ export default function App() {
   const [screen, setScreen]       = useState('login')
   const [myName, setMyName]       = useState('')
   const [nameInput, setNameInput] = useState('')
+  const [password, setPassword] = useState('')
+  const [authPending, setAuthPending] = useState(false)
   const [connected, setConnected] = useState(false)
   const [isHost, setIsHost]       = useState(false)
   const [game, setGame]           = useState(null)
@@ -68,7 +67,6 @@ export default function App() {
   const [now, setNow]             = useState(Date.now())
   const [turnActionSec, setTurnActionSec] = useState(DEFAULT_TURN_ACTION_SEC)
   const [autoDealAt, setAutoDealAt] = useState(null)
-  const [tableHostId, setTableHostId] = useState(null)
   const logRef = useRef(null)
   const chatRef = useRef(null)
 
@@ -79,7 +77,6 @@ export default function App() {
     socket.on('room_update', ({ players, game, hostId, chat: chatMsgs, hostBank: hb, stats: st, turnActionSeconds: tas, autoDealAt: ada }) => {
       setRoomPlayers(players)
       setGame(game)
-      setTableHostId(hostId ?? null)
       setIsHost(!!hostId && socket.id === hostId)
       if (chatMsgs) setChat(chatMsgs)
       if (typeof hb === 'number') setHostBank(hb)
@@ -92,12 +89,30 @@ export default function App() {
     socket.on('your_cards', (cards) => setMyCards(cards))
     socket.on('all_cards',  (hands) => setAllCards(hands))
     socket.on('error_msg',  (msg)   => { setError(msg); setTimeout(() => setError(''), 3000) })
-    socket.on('kicked', () => { setScreen('login'); setMyName('') })
+    socket.on('auth_ok', ({ displayName }) => {
+      setAuthPending(false)
+      setError('')
+      setMyName(displayName)
+      setPassword('')
+      socket.emit('join_table', { tableId: TABLE_ID, playerName: displayName })
+      setScreen('table')
+    })
+    socket.on('auth_error', (msg) => {
+      setAuthPending(false)
+      setError(typeof msg === 'string' ? msg : 'Could not sign in.')
+    })
+    socket.on('kicked', () => {
+      setScreen('login')
+      setMyName('')
+      setPassword('')
+      setError('')
+    })
 
     return () => {
       socket.off('connect'); socket.off('disconnect')
       socket.off('room_update'); socket.off('your_cards')
       socket.off('all_cards'); socket.off('error_msg'); socket.off('kicked')
+      socket.off('auth_ok'); socket.off('auth_error')
     }
   }, [])
 
@@ -116,12 +131,28 @@ export default function App() {
     return () => clearInterval(id)
   }, [game?.turnDeadline, autoDealAt])
 
-  function joinTable() {
+  function signIn() {
+    if (!connected || authPending) return
     const name = nameInput.trim()
-    if (!name) return
-    setMyName(name)
-    socket.emit('join_table', { tableId: TABLE_ID, playerName: name })
-    setScreen('table')
+    if (!name || !password) {
+      setError('Enter display name and password.')
+      return
+    }
+    setAuthPending(true)
+    setError('')
+    socket.emit('auth_signin', { displayName: name, password })
+  }
+
+  function registerAccount() {
+    if (!connected || authPending) return
+    const name = nameInput.trim()
+    if (!name || !password) {
+      setError('Enter display name and password.')
+      return
+    }
+    setAuthPending(true)
+    setError('')
+    socket.emit('auth_register', { displayName: name, password })
   }
 
   function doAction(type, amount) {
@@ -176,29 +207,60 @@ export default function App() {
     return null  // null = show back of card
   }
 
+  const inputStyle = { width:'100%', background:'#111', border:'1px solid #333', borderRadius:8, color:'#e8e0d0', padding:'10px 14px', fontSize:14, outline:'none', boxSizing:'border-box' }
+
   // ── LOGIN ──────────────────────────────────────────────────────────────────
   if (screen === 'login') return (
     <div style={{ minHeight:'100vh', background:'#0a0a0a', display:'flex', alignItems:'center', justifyContent:'center', fontFamily:'sans-serif' }}>
-      <div style={{ background:'#1a1a1a', border:'1px solid #2a2a2a', borderRadius:14, padding:40, textAlign:'center', width:320 }}>
+      <div style={{ background:'#1a1a1a', border:'1px solid #2a2a2a', borderRadius:14, padding:40, textAlign:'center', width:360 }}>
         <div style={{ fontSize:30, fontWeight:700, color:GLD, letterSpacing:3, marginBottom:6 }}>
           FELT<span style={{ color:'#666', fontWeight:400 }}>CLUB</span>
         </div>
-        <div style={{ fontSize:12, color: connected ? '#5dbb5d' : '#666', marginBottom:28 }}>
+        <div style={{ fontSize:12, color: connected ? '#5dbb5d' : '#666', marginBottom:8 }}>
           {connected ? '🟢 Server online' : '🔴 Connecting...'}
         </div>
-        <div style={{ fontSize:11, color:'#666', marginBottom:14, lineHeight:1.45, textAlign:'left' }}>
-          Table host: use display name <span style={{ fontFamily:'monospace', color:GLD }}>{HOST_PIN_NAME}</span>. All other players pick any name.
+        <div style={{ fontSize:11, color:'#555', marginBottom:20, lineHeight:1.45 }}>
+          New here? <strong style={{ color:'#777' }}>Create account</strong> once, then use <strong style={{ color:'#777' }}>Sign in</strong> next time. Passwords are at least 6 characters.
         </div>
+        {error && (
+          <div style={{ background:'#2a1a1a', border:'1px solid #6a3a3a', borderRadius:8, padding:'8px 12px', fontSize:12, color:'#e07070', marginBottom:14, textAlign:'left' }}>
+            {error}
+          </div>
+        )}
+        <label style={{ display:'block', textAlign:'left', fontSize:10, color:'#666', marginBottom:6, textTransform:'uppercase', letterSpacing:0.5 }}>Display name</label>
         <input
           autoFocus
-          placeholder="Your display name"
+          placeholder="e.g. Alice"
           value={nameInput}
-          onChange={e => setNameInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && joinTable()}
-          style={{ width:'100%', background:'#111', border:'1px solid #333', borderRadius:8, color:'#e8e0d0', padding:'10px 14px', fontSize:14, marginBottom:12, outline:'none', boxSizing:'border-box' }}
+          onChange={e => { setNameInput(e.target.value); setError('') }}
+          onKeyDown={e => e.key === 'Enter' && signIn()}
+          style={{ ...inputStyle, marginBottom:14 }}
         />
-        <button onClick={joinTable} style={{ width:'100%', background:GLD, border:'none', borderRadius:8, color:'#1a1a1a', padding:'11px 0', fontSize:14, fontWeight:700, cursor:'pointer' }}>
-          Join table →
+        <label style={{ display:'block', textAlign:'left', fontSize:10, color:'#666', marginBottom:6, textTransform:'uppercase', letterSpacing:0.5 }}>Password</label>
+        <input
+          type="password"
+          placeholder="••••••••"
+          value={password}
+          onChange={e => { setPassword(e.target.value); setError('') }}
+          onKeyDown={e => e.key === 'Enter' && signIn()}
+          style={{ ...inputStyle, marginBottom:16 }}
+          autoComplete="current-password"
+        />
+        <button
+          type="button"
+          disabled={!connected || authPending}
+          onClick={signIn}
+          style={{ width:'100%', background:GLD, border:'none', borderRadius:8, color:'#1a1a1a', padding:'11px 0', fontSize:14, fontWeight:700, cursor: connected && !authPending ? 'pointer' : 'default', opacity: connected && !authPending ? 1 : 0.5, marginBottom:10 }}
+        >
+          {authPending ? 'Please wait…' : 'Sign in →'}
+        </button>
+        <button
+          type="button"
+          disabled={!connected || authPending}
+          onClick={registerAccount}
+          style={{ width:'100%', background:'transparent', border:'1px solid #444', borderRadius:8, color:'#999', padding:'10px 0', fontSize:13, cursor: connected && !authPending ? 'pointer' : 'default', opacity: connected && !authPending ? 1 : 0.5 }}
+        >
+          Create account
         </button>
       </div>
     </div>
@@ -240,9 +302,7 @@ export default function App() {
             </button>
           )}
           {!isHost && !game && (
-            <span style={{ fontSize:12, color:'#555' }}>
-              {tableHostId == null ? 'Waiting for table host to join (PIN as name)…' : 'Waiting for host to deal…'}
-            </span>
+            <span style={{ fontSize:12, color:'#555' }}>Waiting for host to deal…</span>
           )}
         </div>
       </div>
@@ -427,7 +487,7 @@ export default function App() {
           </div>
         ) : (
           <div style={{ padding:'10px 14px', background:'#111', borderRadius:8, fontSize:11, color:'#383838', border:'1px solid #161616', minHeight:52, display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-            {!game ? (tableHostId == null ? 'Waiting for table host to join…' : 'Waiting for host to start the game…')
+            {!game ? 'Waiting for host to start the game…'
               : game.phase === 'idle' ? (
                 <>
                   <span>{autoDealSecsLeft > 0 ? `Hand over — next deal in ${autoDealSecsLeft}s…` : 'Hand over — shuffling…'}</span>

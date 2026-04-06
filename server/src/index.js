@@ -2,6 +2,7 @@ const express = require('express')
 const http = require('http')
 const { Server } = require('socket.io')
 const cors = require('cors')
+const bcrypt = require('bcryptjs')
 
 const app = express()
 app.use(cors())
@@ -15,6 +16,16 @@ const httpServer = http.createServer(app)
 const io = new Server(httpServer, {
   cors: { origin: ['http://localhost:5173', 'https://feltclub.vercel.app'], methods: ['GET', 'POST'] }
 })
+
+// ─── Accounts (in-memory; sign-in required before joining a table) ─────────────
+const MIN_PASSWORD_LEN = 6
+const MAX_DISPLAY_LEN = 40
+/** @type {Record<string, { displayName: string, passwordHash: string }>} */
+const accounts = {}
+
+function accountKey(displayName) {
+  return String(displayName ?? '').trim().toLowerCase()
+}
 
 // ─── Deck & Evaluator ────────────────────────────────────────────────────────
 const mkDeck = () => {
@@ -79,18 +90,6 @@ const TURN_SECONDS = 30
 const CHAT_MAX = 50
 /** Pause after a hand ends (idle or showdown) before the next hand is dealt automatically. */
 const AUTO_DEAL_DELAY_MS = 4000
-/** Join with this exact display name (trimmed) to be table host (deal, bank, kick, reveal). First match wins if several. */
-const HOST_PIN_NAME = '0802573'
-
-function isHostPinUser(playerName) {
-  return String(playerName ?? '').trim() === HOST_PIN_NAME
-}
-
-/** Sets room.hostId to the first seated player whose name matches HOST_PIN_NAME, else null. */
-function recomputeHost(room) {
-  const h = room.players.find(p => isHostPinUser(p.name))
-  room.hostId = h ? h.socketId : null
-}
 
 // ─── Game Rooms ──────────────────────────────────────────────────────────────
 const rooms = {}   // tableId → { players, gameState }
@@ -500,7 +499,8 @@ function removePlayerFromTable(tableId, targetSocketId) {
   clearTurnTimer(room)
 
   room.players = room.players.filter(p => p.socketId !== targetSocketId)
-  recomputeHost(room)
+  if (room.players.length === 0) room.hostId = null
+  else if (!room.players.some(p => p.socketId === room.hostId)) room.hostId = room.players[0].socketId
   room.players.forEach((p, i) => { p.seat = i })
 
   if (!room.game) {
@@ -587,6 +587,40 @@ function removePlayerFromTable(tableId, targetSocketId) {
 io.on('connection', (socket) => {
   console.log('Connected:', socket.id)
 
+  socket.on('auth_register', ({ displayName, password }) => {
+    const name = String(displayName ?? '').trim()
+    const pw = String(password ?? '')
+    if (!name || name.length > MAX_DISPLAY_LEN) {
+      socket.emit('auth_error', 'Enter a display name (1–40 characters).')
+      return
+    }
+    if (pw.length < MIN_PASSWORD_LEN) {
+      socket.emit('auth_error', `Password must be at least ${MIN_PASSWORD_LEN} characters.`)
+      return
+    }
+    const key = accountKey(name)
+    if (accounts[key]) {
+      socket.emit('auth_error', 'That display name is taken. Sign in or pick another name.')
+      return
+    }
+    accounts[key] = { displayName: name, passwordHash: bcrypt.hashSync(pw, 10) }
+    socket.data.authDisplayName = name
+    socket.emit('auth_ok', { displayName: name })
+  })
+
+  socket.on('auth_signin', ({ displayName, password }) => {
+    const name = String(displayName ?? '').trim()
+    const pw = String(password ?? '')
+    const key = accountKey(name)
+    const acct = accounts[key]
+    if (!acct || !bcrypt.compareSync(pw, acct.passwordHash)) {
+      socket.emit('auth_error', 'Invalid display name or password.')
+      return
+    }
+    socket.data.authDisplayName = acct.displayName
+    socket.emit('auth_ok', { displayName: acct.displayName })
+  })
+
   socket.on('join_table', ({ tableId, playerName }) => {
     const room = getOrCreateRoom(tableId)
 
@@ -595,8 +629,13 @@ io.on('connection', (socket) => {
 
     const name = String(playerName ?? '').trim()
     if (!name) return
+    if (!socket.data.authDisplayName || name !== socket.data.authDisplayName) {
+      socket.emit('auth_error', 'Sign in with your display name and password first.')
+      return
+    }
 
     const seat = room.players.length
+    const isFirstAtTable = seat === 0
 
     room.players.push({
       socketId: socket.id,
@@ -605,7 +644,7 @@ io.on('connection', (socket) => {
       seat,
     })
     ensureStats(room, name)
-    recomputeHost(room)
+    if (isFirstAtTable) room.hostId = socket.id
 
     socket.join(tableId)
     socket.data.tableId = tableId
