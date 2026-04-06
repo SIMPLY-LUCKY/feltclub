@@ -71,6 +71,8 @@ function best7(hole, com) {
 }
 const HN = ['High card','Pair','Two pair','Three of a kind','Straight','Flush','Full house','Four of a kind','Straight flush']
 const SB = 10, BB = 20, BUY_IN = 1000
+const TURN_SECONDS = 30
+const CHAT_MAX = 50
 
 // ─── Game Rooms ──────────────────────────────────────────────────────────────
 const rooms = {}   // tableId → { players, gameState }
@@ -82,14 +84,56 @@ function getOrCreateRoom(tableId) {
       players: [],   // { socketId, name, stack, seat }
       game: null,
       hostId: null,
+      chat: [],
+      turnTimer: null,
     }
   }
+  if (!rooms[tableId].chat) rooms[tableId].chat = []
   return rooms[tableId]
 }
 
-function broadcastRoom(tableId) {
+function clearTurnTimer(room) {
+  if (room.turnTimer) {
+    clearTimeout(room.turnTimer)
+    room.turnTimer = null
+  }
+}
+
+/** Sets game.turnDeadline and schedules auto-fold when time expires. */
+function refreshTurnTimer(tableId) {
   const room = rooms[tableId]
   if (!room) return
+  clearTurnTimer(room)
+  const g = room.game
+  if (!g || g.currentPlayer < 0 || g.phase === 'idle' || g.phase === 'showdown') {
+    if (g) g.turnDeadline = null
+    return
+  }
+  const cp = g.players[g.currentPlayer]
+  if (!cp || cp.folded || cp.allIn) {
+    g.turnDeadline = null
+    return
+  }
+  const deadline = Date.now() + TURN_SECONDS * 1000
+  g.turnDeadline = deadline
+  room.turnTimer = setTimeout(() => {
+    room.turnTimer = null
+    const rg = room.game
+    if (!rg || rg.turnDeadline !== deadline) return
+    const cur = rg.players[rg.currentPlayer]
+    if (!cur || cur.socketId !== cp.socketId) return
+    const callAmt = Math.max(0, rg.currentBet - cur.streetBet)
+    if (callAmt === 0) handleAction(tableId, cur.socketId, { type: 'check' })
+    else if (cur.stack > 0) handleAction(tableId, cur.socketId, { type: 'call' })
+    else handleAction(tableId, cur.socketId, { type: 'fold' })
+  }, TURN_SECONDS * 1000)
+}
+
+function broadcastRoom(tableId, opts = {}) {
+  const { refreshTimer = true } = opts
+  const room = rooms[tableId]
+  if (!room) return
+  if (refreshTimer) refreshTurnTimer(tableId)
   // Send public game state to everyone
   io.to(tableId).emit('room_update', {
     players: room.players.map(p => ({
@@ -100,6 +144,7 @@ function broadcastRoom(tableId) {
     })),
     game: room.game ? sanitizeGame(room.game, null) : null,
     hostId: room.hostId,
+    chat: room.chat.slice(-CHAT_MAX),
   })
   // Send each player their private hole cards
   if (room.game) {
@@ -142,7 +187,8 @@ function sanitizeGame(game, socketId) {
         ? HN[best7(p.holeCards, game.community)?.score?.[0] ?? 0]
         : null,
       holeCards: game.showAllCards ? p.holeCards : [],
-    }))
+    })),
+    turnDeadline: game.turnDeadline ?? null,
   }
 }
 
@@ -380,6 +426,18 @@ io.on('connection', (socket) => {
     handleAction(tableId, socket.id, action)
   })
 
+  socket.on('chat_message', ({ tableId, text }) => {
+    const room = rooms[tableId]
+    if (!room) return
+    const p = room.players.find(x => x.socketId === socket.id)
+    if (!p) return
+    const t = String(text ?? '').trim().slice(0, 200)
+    if (!t) return
+    room.chat.push({ from: p.name, text: t, ts: Date.now() })
+    while (room.chat.length > CHAT_MAX) room.chat.shift()
+    broadcastRoom(tableId, { refreshTimer: false })
+  })
+
   socket.on('kick_player', ({ tableId, kickSocketId }) => {
     const room = rooms[tableId]
     if (!room || socket.id !== room.hostId) return
@@ -393,7 +451,7 @@ socket.on('reveal_all', ({ tableId }) => {
     const room = rooms[tableId]
     if (!room || socket.id !== room.hostId || !room.game) return
     room.game.showAllCards = !room.game.showAllCards
-    broadcastRoom(tableId)
+    broadcastRoom(tableId, { refreshTimer: false })
   })
 
   socket.on('disconnect', () => {

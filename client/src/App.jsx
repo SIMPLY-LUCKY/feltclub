@@ -55,29 +55,33 @@ export default function App() {
   const [roomPlayers, setRoomPlayers] = useState([])
   const [raise, setRaise]         = useState(40)
   const [error, setError]         = useState('')
+  const [chat, setChat]           = useState([])
+  const [chatInput, setChatInput] = useState('')
+  const [now, setNow]             = useState(Date.now())
   const logRef = useRef(null)
+  const chatRef = useRef(null)
 
   useEffect(() => {
     socket.on('connect',    () => setConnected(true))
     socket.on('disconnect', () => setConnected(false))
 
-    socket.on('room_update', ({ players, game, hostId }) => {
+    socket.on('room_update', ({ players, game, hostId, chat: chatMsgs }) => {
       setRoomPlayers(players)
       setGame(game)
       setIsHost(socket.id === hostId)
+      if (chatMsgs) setChat(chatMsgs)
       if (game?.currentBet) setRaise(Math.max(game.currentBet * 2, game.currentBet + 20))
     })
 
     socket.on('your_cards', (cards) => setMyCards(cards))
     socket.on('all_cards',  (hands) => setAllCards(hands))
     socket.on('error_msg',  (msg)   => { setError(msg); setTimeout(() => setError(''), 3000) })
-
-socket.on('kicked', () => { setScreen('login'); setMyName('') })
+    socket.on('kicked', () => { setScreen('login'); setMyName('') })
 
     return () => {
       socket.off('connect'); socket.off('disconnect')
       socket.off('room_update'); socket.off('your_cards')
-      socket.off('all_cards'); socket.off('error_msg')
+      socket.off('all_cards'); socket.off('error_msg'); socket.off('kicked')
     }
   }, [])
 
@@ -85,6 +89,16 @@ socket.on('kicked', () => { setScreen('login'); setMyName('') })
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [game?.log])
+
+  useEffect(() => {
+    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
+  }, [chat])
+
+  useEffect(() => {
+    if (!game?.turnDeadline) return
+    const id = setInterval(() => setNow(Date.now()), 250)
+    return () => clearInterval(id)
+  }, [game?.turnDeadline])
 
   function joinTable() {
     if (!nameInput.trim()) return
@@ -96,6 +110,17 @@ socket.on('kicked', () => { setScreen('login'); setMyName('') })
   function doAction(type, amount) {
     socket.emit('player_action', { tableId: TABLE_ID, action: { type, amount } })
   }
+
+  function sendChat() {
+    const t = chatInput.trim()
+    if (!t) return
+    socket.emit('chat_message', { tableId: TABLE_ID, text: t })
+    setChatInput('')
+  }
+
+  const secsLeft = game?.turnDeadline != null
+    ? Math.max(0, Math.ceil((game.turnDeadline - now) / 1000))
+    : null
 
   // Find my player in the game
   const myId = socket.id
@@ -264,6 +289,12 @@ socket.on('kicked', () => { setScreen('login'); setMyName('') })
                   bet ${p.streetBet}
                 </div>
               )}
+              {isActive && secsLeft != null && game?.phase !== 'idle' && game?.phase !== 'showdown' && (
+                <div style={{
+                  fontSize:10, fontWeight:800, fontVariantNumeric:'tabular-nums', color: secsLeft <= 5 ? '#e74c3c' : '#5dbb5d',
+                  background:'rgba(0,0,0,0.65)', padding:'2px 8px', borderRadius:10, border:`1px solid ${secsLeft <= 5 ? '#c0392b88' : '#2a6a3a'}`
+                }}>{secsLeft}s</div>
+              )}
             </div>
           )
         })}
@@ -273,6 +304,13 @@ socket.on('kicked', () => { setScreen('login'); setMyName('') })
       <div style={{ minHeight:52 }}>
         {canAct ? (
           <div style={{ display:'flex', gap:8, alignItems:'center', padding:'9px 12px', background:'#141414', borderRadius:8, border:'1px solid #1e1e1e', flexWrap:'wrap' }}>
+            {secsLeft != null && (
+              <div style={{
+                minWidth:40, textAlign:'center', fontSize:14, fontWeight:800, fontVariantNumeric:'tabular-nums',
+                color: secsLeft <= 5 ? '#e74c3c' : secsLeft <= 10 ? '#f39c12' : '#5dbb5d',
+                border: `1px solid ${secsLeft <= 5 ? '#c0392b66' : '#2a2a2a'}`, borderRadius:8, padding:'6px 10px', fontFamily:'sans-serif'
+              }} title="Time to act">{secsLeft}s</div>
+            )}
             <button onClick={() => doAction('fold')} style={{ background:'transparent', border:'1px solid rgba(192,57,43,0.5)', borderRadius:6, color:'#c0392b', fontSize:12, padding:'7px 15px', cursor:'pointer', fontFamily:'sans-serif' }}>Fold</button>
             {callAmt === 0
               ? <button onClick={() => doAction('check')} style={{ background:'transparent', border:'1px solid #2e2e2e', borderRadius:6, color:'#bbb', fontSize:12, padding:'7px 15px', cursor:'pointer', fontFamily:'sans-serif' }}>Check</button>
@@ -289,35 +327,78 @@ socket.on('kicked', () => { setScreen('login'); setMyName('') })
             </div>
           </div>
         ) : (
-          <div style={{ padding:'10px 14px', background:'#111', borderRadius:8, fontSize:11, color:'#383838', border:'1px solid #161616', minHeight:52, display:'flex', alignItems:'center' }}>
+          <div style={{ padding:'10px 14px', background:'#111', borderRadius:8, fontSize:11, color:'#383838', border:'1px solid #161616', minHeight:52, display:'flex', alignItems:'center', gap:10 }}>
             {!game ? 'Waiting for host to start the game…'
               : game.phase === 'idle' ? 'Hand over — waiting for next hand…'
               : game.phase === 'showdown' ? 'Showdown! Waiting for next hand…'
-              : `Waiting for ${game.players?.[game.currentPlayer]?.name || '...'}…`}
+              : (
+                <>
+                  <span>Waiting for {game.players?.[game.currentPlayer]?.name || '...'}…</span>
+                  {secsLeft != null && (
+                    <span style={{
+                      fontWeight:800, fontVariantNumeric:'tabular-nums', color: secsLeft <= 5 ? '#e74c3c' : '#5a5a5a', fontSize:12
+                    }}>{secsLeft}s</span>
+                  )}
+                </>
+              )}
           </div>
         )}
       </div>
 
-      {/* Log + players online */}
-      <div style={{ display:'flex', gap:10 }}>
-        <div ref={logRef} style={{ flex:1, background:'#0d0d0d', borderRadius:8, padding:'8px 12px', height:80, overflowY:'auto', fontSize:11, lineHeight:2, border:'1px solid #161616' }}>
-          {(game?.log || ['Waiting for game to start…']).map((l, i, a) => (
-            <div key={i} style={{ color: l.startsWith('──') ? '#3a6a3a' : i >= a.length - 3 ? '#999' : '#3e3e3e', fontWeight: l.startsWith('──') ? 600 : 400 }}>{l}</div>
-          ))}
+      {/* Log + chat + players online */}
+      <div style={{ display:'flex', gap:10, alignItems:'stretch' }}>
+        <div style={{ flex:1, display:'flex', flexDirection:'column', gap:8, minWidth:0 }}>
+          <div style={{ fontSize:10, color:'#444', textTransform:'uppercase', letterSpacing:0.8 }}>Hand log</div>
+          <div ref={logRef} style={{ background:'#0d0d0d', borderRadius:8, padding:'8px 12px', height:80, overflowY:'auto', fontSize:11, lineHeight:2, border:'1px solid #161616' }}>
+            {(game?.log || ['Waiting for game to start…']).map((l, i, a) => (
+              <div key={i} style={{ color: l.startsWith('──') ? '#3a6a3a' : i >= a.length - 3 ? '#999' : '#3e3e3e', fontWeight: l.startsWith('──') ? 600 : 400 }}>{l}</div>
+            ))}
+          </div>
+          <div style={{ fontSize:10, color:'#444', textTransform:'uppercase', letterSpacing:0.8 }}>Table chat</div>
+          <div ref={chatRef} style={{ background:'#0d0d0d', borderRadius:8, padding:'8px 12px', height:88, overflowY:'auto', fontSize:11, lineHeight:1.45, border:'1px solid #161616' }}>
+            {chat.length === 0 ? (
+              <div style={{ color:'#3a3a3a', fontSize:11 }}>No messages yet — say hi.</div>
+            ) : (
+              chat.map((m, i) => (
+                <div key={`${m.ts}-${i}`} style={{ marginBottom:6, wordBreak:'break-word' }}>
+                  <span style={{ color: GLD, fontWeight:600 }}>{m.from}</span>
+                  <span style={{ color:'#555' }}>: </span>
+                  <span style={{ color:'#b8b0a0' }}>{m.text}</span>
+                </div>
+              ))
+            )}
+          </div>
+          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+            <input
+              placeholder="Message the table…"
+              value={chatInput}
+              onChange={e => setChatInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && sendChat()}
+              style={{ flex:1, minWidth:0, background:'#111', border:'1px solid #222', borderRadius:8, color:'#e8e0d0', padding:'9px 12px', fontSize:13, outline:'none', fontFamily:'sans-serif' }}
+            />
+            <button type="button" onClick={sendChat} style={{ background:GLD, border:'none', borderRadius:8, color:'#1a1a1a', fontSize:12, fontWeight:700, padding:'9px 16px', cursor:'pointer', fontFamily:'sans-serif', flexShrink:0 }}>
+              Send
+            </button>
+          </div>
         </div>
-        <div style={{ width:140, background:'#0d0d0d', borderRadius:8, padding:'8px 10px', border:'1px solid #161616' }}>
+        <div style={{ width:140, flexShrink:0, background:'#0d0d0d', borderRadius:8, padding:'8px 10px', border:'1px solid #161616' }}>
           <div style={{ fontSize:10, color:'#444', textTransform:'uppercase', letterSpacing:0.8, marginBottom:6 }}>Online — {roomPlayers.length}</div>
           {roomPlayers.map(p => (
-  <div key={p.socketId} style={{ fontSize:11, color: p.socketId === myId ? GLD : '#666', padding:'2px 0', display:'flex', alignItems:'center', gap:5, justifyContent:'space-between' }}>
-    <div style={{ display:'flex', alignItems:'center', gap:5 }}>
-      <div style={{ width:5, height:5, borderRadius:'50%', background:'#5dbb5d', flexShrink:0 }} />
-      {p.name}{p.socketId === myId ? ' ✦' : ''}
+            <div key={p.socketId} style={{ fontSize:11, color: p.socketId === myId ? GLD : '#666', padding:'2px 0', display:'flex', alignItems:'center', gap:5, justifyContent:'space-between' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:5, minWidth:0 }}>
+                <div style={{ width:5, height:5, borderRadius:'50%', background:'#5dbb5d', flexShrink:0 }} />
+                <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.name}{p.socketId === myId ? ' ✦' : ''}</span>
+              </div>
+              {isHost && p.socketId !== myId && (
+                <button type="button" onClick={() => socket.emit('kick_player', { tableId: TABLE_ID, kickSocketId: p.socketId })}
+                  style={{ background:'transparent', border:'1px solid #6a2a2a', borderRadius:4, color:'#c0392b', fontSize:9, padding:'1px 5px', cursor:'pointer', fontFamily:'sans-serif', flexShrink:0 }}>
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
-    {isHost && p.socketId !== myId && (
-      <button onClick={() => socket.emit('kick_player', { tableId: TABLE_ID, kickSocketId: p.socketId })}
-        style={{ background:'transparent', border:'1px solid #6a2a2a', borderRadius:4, color:'#c0392b', fontSize:9, padding:'1px 5px', cursor:'pointer', fontFamily:'sans-serif' }}>
-        ✕
-      </button>
-    )}
-  </div>
-))}
+  )
+}
