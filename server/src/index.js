@@ -636,10 +636,22 @@ io.on('connection', socket => {
     const room = getRoom(tableId)
     if (!assertHost(socket, room)) return
     const target = room.players.find(p => p.socketId === targetSocketId)
-    if (!target) return
+    if (!target) {
+      socket.emit('error_msg', 'That player is not at this table.')
+      return
+    }
+    if (target.unlimitedChips) {
+      socket.emit('error_msg', 'Use chip controls on seated players, not the host seat.')
+      return
+    }
     const amt = Math.trunc(Number(amount))
-    if (!Number.isFinite(amt) || amt === 0) return
-    if (room.game && room.game.phase !== 'idle') {
+    if (!Number.isFinite(amt) || amt === 0) {
+      socket.emit('error_msg', 'Enter a valid chip amount.')
+      return
+    }
+    const g = room.game
+    const phase = g?.phase
+    if (g && phase !== 'idle' && phase !== 'showdown') {
       socket.emit('error_msg', 'Wait until the hand is finished to move chips.')
       return
     }
@@ -652,7 +664,10 @@ io.on('connection', socket => {
       target.stack += amt
     } else {
       const take = Math.min(-amt, target.stack)
-      if (take <= 0) return
+      if (take <= 0) {
+        socket.emit('error_msg', 'That player has no chips to take back.')
+        return
+      }
       target.stack -= take
       room.hostBank += take
     }

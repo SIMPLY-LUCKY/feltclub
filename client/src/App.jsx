@@ -465,9 +465,16 @@ export default function App() {
   }, [raiseTo, tableId])
 
   const assignChips = (targetId, signed) => {
-    if (!tableId) return
-    const n = Math.trunc(Number(hostAssignAmt))
-    if (!Number.isFinite(n) || n === 0) return
+    if (!tableId) {
+      setError('Not connected to a table.')
+      setTimeout(() => setError(''), 4000)
+      return
+    }
+    const raw = String(hostAssignAmt ?? '').trim()
+    let n = Math.trunc(Number(raw))
+    if (!Number.isFinite(n) || n === 0) {
+      n = 100
+    }
     const amt = signed * Math.abs(n)
     socket.emit('host_assign_chips', { tableId, targetSocketId: targetId, amount: amt })
   }
