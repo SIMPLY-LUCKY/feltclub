@@ -3,11 +3,19 @@ import socket from './socket'
 
 const SUPER_ADMIN_NAME = 'SIMPLY.LUCKY'
 const MAX_PLAYER_OPTIONS = [2, 4, 6, 9]
+const MAX_TABLE_OBSERVERS = 32
+
+function joinTableDisabled(row, joiningTable) {
+  const atTable = row.playersAtTable ?? row.playersSeated
+  if (joiningTable) return true
+  if (row.seatAssignment === 'choose') return atTable >= row.maxSeats + MAX_TABLE_OBSERVERS
+  return row.playersSeated >= row.maxSeats
+}
 
 /** Board (community) and hole card layouts in CSS px at scale 1. */
 const CARD_LAYOUT = {
-  board: { w: 75, h: 105, rank: 28, suit: 22, radius: 8, suitMarginTop: 6 },
-  hole: { w: 60, h: 84, rank: 22, suit: 18, radius: 8, suitMarginTop: 5 },
+  board: { w: 80, h: 112, rank: 30, suit: 24, radius: 10 },
+  hole: { w: 64, h: 90, rank: 24, suit: 20, radius: 8 },
 }
 const BOARD_CARD_GAP = 10
 const HOLE_CARD_GAP = 6
@@ -41,8 +49,10 @@ function rankStr(r) {
 }
 
 /** Classic: red h/d, black c/s. 4-colour: same red/black anchors + blue diamonds / green clubs. */
-const SUIT_COLORS_CLASSIC = { h: '#e01010', d: '#e01010', c: '#111111', s: '#111111' }
-const SUIT_COLORS_FOUR = { h: '#e01010', d: '#1565c0', c: '#1b5e20', s: '#111111' }
+const SUIT_COLORS_CLASSIC = { h: '#e01010', d: '#e01010', c: '#0a0a0a', s: '#0a0a0a' }
+const SUIT_COLORS_FOUR = { h: '#e01010', d: '#1565c0', c: '#1b5e20', s: '#0a0a0a' }
+
+const suitSym = { h: '♥', d: '♦', c: '♣', s: '♠' }
 
 function Card({ card, variant = 'hole', back, fourColor }) {
   const faceL = variant === 'board' ? CARD_LAYOUT.board : CARD_LAYOUT.hole
@@ -59,26 +69,48 @@ function Card({ card, variant = 'hole', back, fourColor }) {
           borderRadius: br,
           boxSizing: 'border-box',
           flexShrink: 0,
-          background: `
-            repeating-linear-gradient(
-              45deg,
-              transparent,
-              transparent 5px,
-              rgba(255,255,255,0.07) 5px,
-              rgba(255,255,255,0.07) 10px
-            ),
-            #1a3a8a
-          `,
-          border: '2px solid rgba(0,0,0,0.35)',
-          boxShadow:
-            'inset 0 0 0 2px rgba(255,255,255,0.2), inset 0 0 0 5px rgba(0,0,0,0.15), inset 0 0 0 7px rgba(255,255,255,0.1), 0 2px 10px rgba(0,0,0,0.35)',
+          background: `repeating-linear-gradient(
+            45deg,
+            #1a3a8a,
+            #1a3a8a 7px,
+            #1e4499 7px,
+            #1e4499 14px
+          )`,
+          border: '2px solid #243a7a',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
         }}
       />
     )
   }
-  const suitSym = { h: '♥', d: '♦', c: '♣', s: '♠' }
   const fc = fourColor ? SUIT_COLORS_FOUR : SUIT_COLORS_CLASSIC
   const col = fc[card.s] || '#ccc'
+  const rnk = rankStr(card.r)
+  const sym = suitSym[card.s] ?? '?'
+  const isBoard = variant === 'board'
+  const shadow = isBoard ? '0 4px 12px rgba(0,0,0,0.5)' : '0 2px 8px rgba(0,0,0,0.4)'
+  const corner = (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'flex-start',
+        lineHeight: 1,
+        color: col,
+      }}
+    >
+      <span
+        style={{
+          fontSize: L.rank,
+          fontWeight: 900,
+          letterSpacing: isBoard ? 0 : -1,
+          fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+        }}
+      >
+        {rnk}
+      </span>
+      <span style={{ fontSize: L.suit, fontWeight: 900, marginTop: 1 }}>{sym}</span>
+    </div>
+  )
   return (
     <div
       style={{
@@ -87,24 +119,16 @@ function Card({ card, variant = 'hole', back, fourColor }) {
         borderRadius: br,
         boxSizing: 'border-box',
         background: '#ffffff',
-        border: '2px solid #ddd',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        color: col,
-        fontWeight: 900,
-        fontSize: L.rank,
-        lineHeight: 1,
+        border: '2px solid #e0e0e0',
+        boxShadow: shadow,
         flexShrink: 0,
         userSelect: 'none',
+        position: 'relative',
+        overflow: 'hidden',
       }}
     >
-      <span style={{ fontWeight: 900 }}>{rankStr(card.r)}</span>
-      <span style={{ fontSize: L.suit, lineHeight: 1.1, fontWeight: 900, marginTop: L.suitMarginTop }}>
-        {suitSym[card.s]}
-      </span>
+      <div style={{ position: 'absolute', left: 5, top: 4 }}>{corner}</div>
+      <div style={{ position: 'absolute', right: 5, bottom: 4, transform: 'rotate(180deg)' }}>{corner}</div>
     </div>
   )
 }
@@ -153,6 +177,7 @@ export default function App() {
   const [createSb, setCreateSb] = useState('10')
   const [createBb, setCreateBb] = useState('20')
   const [createMax, setCreateMax] = useState(6)
+  const [createSeatAssignment, setCreateSeatAssignment] = useState('random')
   const [createPwd, setCreatePwd] = useState('')
   const [joinPwdModal, setJoinPwdModal] = useState(null)
   const [joinPwdInput, setJoinPwdInput] = useState('')
@@ -165,10 +190,13 @@ export default function App() {
   const [gameType, setGameType] = useState('NLHE')
   const [gameTypes, setGameTypes] = useState(['NLHE', 'PLO4', 'PLO5', 'PLO6'])
   const [maxSeats, setMaxSeats] = useState(10)
+  const [seatAssignment, setSeatAssignment] = useState('random')
   const [chat, setChat] = useState([])
   const [stats, setStats] = useState({})
   const [turnSec, setTurnSec] = useState(15)
   const [autoDealAt, setAutoDealAt] = useState(null)
+  /** From `next_hand_countdown` (and room_update when joining mid-timer). */
+  const [nextHandSeconds, setNextHandSeconds] = useState(null)
   const [smallBlind, setSmallBlind] = useState(10)
   const [bigBlind, setBigBlind] = useState(20)
 
@@ -186,6 +214,8 @@ export default function App() {
 
   const logRef = useRef(null)
   const screenRef = useRef(screen)
+  const tableIdRef = useRef(null)
+  const prevAutoDealAtRef = useRef(null)
   const joinPending = useRef(false)
   /** Server is source of truth; ignore all_hole_cards unless this is true. */
   const isSuperAdminRef = useRef(false)
@@ -193,14 +223,14 @@ export default function App() {
   const vw = useViewportWidth()
 
   const boardScale = useMemo(() => {
-    const budget = Math.max(220, Math.min(vw * 0.92 - 20, 580))
+    const budget = Math.max(420, Math.min(vw * 0.95 - 24, 720))
     return rowFitScale(5, CARD_LAYOUT.board.w, BOARD_CARD_GAP, budget)
   }, [vw])
 
   const holeScale = useMemo(() => {
     const n = VARIANT_HOLES[game?.variant ?? gameType] ?? 6
     const budget =
-      vw < 640 ? Math.max(160, vw - 36) : Math.min(400, Math.floor(vw * 0.33))
+      vw < 640 ? Math.max(220, vw - 28) : Math.min(520, Math.floor(vw * 0.42))
     return rowFitScale(n, CARD_LAYOUT.hole.w, HOLE_CARD_GAP, budget)
   }, [vw, gameType, game?.variant])
 
@@ -213,6 +243,10 @@ export default function App() {
   useEffect(() => {
     screenRef.current = screen
   }, [screen])
+
+  useEffect(() => {
+    tableIdRef.current = tableId
+  }, [tableId])
 
   useEffect(() => {
     if (screen === 'table') setShowSuperPinField(false)
@@ -283,10 +317,26 @@ export default function App() {
       if (payload.gameType) setGameType(payload.gameType)
       if (Array.isArray(payload.gameTypes)) setGameTypes(payload.gameTypes)
       if (typeof payload.maxSeats === 'number') setMaxSeats(payload.maxSeats)
+      setSeatAssignment(payload.seatAssignment === 'choose' ? 'choose' : 'random')
       setChat(payload.chat || [])
       setStats(payload.stats || {})
       if (typeof payload.turnActionSeconds === 'number') setTurnSec(payload.turnActionSeconds)
-      setAutoDealAt(typeof payload.autoDealAt === 'number' ? payload.autoDealAt : null)
+      if (typeof payload.autoDealAt === 'number') {
+        setAutoDealAt(payload.autoDealAt)
+        const g0 = payload.game
+        const waitingNext = !g0 || g0.phase === 'idle' || g0.phase === 'showdown'
+        if (!waitingNext) {
+          setNextHandSeconds(null)
+        } else if (payload.autoDealAt !== prevAutoDealAtRef.current) {
+          const s = Math.max(0, Math.ceil((payload.autoDealAt - Date.now()) / 1000))
+          setNextHandSeconds(s > 0 ? s : null)
+          prevAutoDealAtRef.current = payload.autoDealAt
+        }
+      } else {
+        setAutoDealAt(null)
+        setNextHandSeconds(null)
+        prevAutoDealAtRef.current = null
+      }
       if (typeof payload.smallBlind === 'number') setSmallBlind(payload.smallBlind)
       if (typeof payload.bigBlind === 'number') setBigBlind(payload.bigBlind)
       const meRow = (payload.players || []).find(p => p.socketId === socket.id)
@@ -328,9 +378,15 @@ export default function App() {
       setScreen('lobby')
       setMyCards([])
       setAllHoleCards(null)
+      setNextHandSeconds(null)
+      prevAutoDealAtRef.current = null
     }
     const onBounds = b => {
       if (b && typeof b === 'object') setRaiseBounds(b)
+    }
+    const onNextHandCountdown = ({ tableId: tid, secondsRemaining }) => {
+      if (tid !== tableIdRef.current) return
+      setNextHandSeconds(secondsRemaining > 0 ? secondsRemaining : null)
     }
     socket.on('room_update', onRoom)
     socket.on('your_hole_cards', onYour)
@@ -338,6 +394,13 @@ export default function App() {
     socket.on('error_msg', onErr)
     socket.on('kicked', onKicked)
     socket.on('raise_bounds', onBounds)
+    socket.on('next_hand_countdown', onNextHandCountdown)
+    const onSeatTaken = msg => {
+      const m = typeof msg === 'object' && msg?.message ? msg.message : String(msg ?? 'Seat taken.')
+      setError(m)
+      setTimeout(() => setError(''), 4000)
+    }
+    socket.on('seat_taken', onSeatTaken)
     return () => {
       socket.off('room_update', onRoom)
       socket.off('your_hole_cards', onYour)
@@ -345,6 +408,8 @@ export default function App() {
       socket.off('error_msg', onErr)
       socket.off('kicked', onKicked)
       socket.off('raise_bounds', onBounds)
+      socket.off('next_hand_countdown', onNextHandCountdown)
+      socket.off('seat_taken', onSeatTaken)
     }
   }, [])
 
@@ -446,6 +511,7 @@ export default function App() {
       gameType: createGameType,
       stakes: { smallBlind: sb, bigBlind: bb },
       maxPlayers: createMax,
+      seatAssignment: createSeatAssignment,
       password: createPwd.trim(),
       playerName: myName.trim(),
       superAdminPin: savedSuperPin,
@@ -518,32 +584,42 @@ export default function App() {
     socket.emit('host_reveal_cards', { tableId, reveal })
   }
 
-  const shareUrl = typeof window !== 'undefined' ? window.location.origin : ''
+  const chooseSeat = useCallback(
+    seatIdx => {
+      if (!tableId) return
+      socket.emit('choose_seat', { tableId, seat: seatIdx })
+    },
+    [tableId],
+  )
 
-  const autoSecs =
-    autoDealAt != null ? Math.max(0, Math.ceil((autoDealAt - now) / 1000)) : null
+  const shareUrl = typeof window !== 'undefined' ? window.location.origin : ''
 
   const actSecsLeft = useMemo(() => {
     if (!game?.turnDeadline) return null
     return Math.max(0, Math.ceil((game.turnDeadline - now) / 1000))
   }, [game?.turnDeadline, now])
 
-  const tableSeats = maxSeats
-  const seatSlots = useMemo(() => {
-    const bySeat = {}
-    roomPlayers.forEach(p => {
-      const s = typeof p.seat === 'number' ? p.seat : 0
-      bySeat[s] = p
-    })
-    return Array.from({ length: tableSeats }, (_, i) => bySeat[i] || null)
-  }, [roomPlayers, tableSeats])
+  /** Seated players only; host at top center, others by seat order on the oval. */
+  const orderedSeats = useMemo(() => {
+    const seatedOnly = roomPlayers.filter(p => p.seated !== false)
+    const sorted = [...seatedOnly].sort((a, b) => (a.seat ?? 0) - (b.seat ?? 0))
+    if (!hostId) return sorted
+    const hi = sorted.findIndex(p => p.socketId === hostId)
+    if (hi <= 0) return sorted
+    return [sorted[hi], ...sorted.slice(0, hi), ...sorted.slice(hi + 1)]
+  }, [roomPlayers, hostId])
 
-  /** Occupied seats spaced evenly on the arc (avoids overlap when maxSeats is large). */
-  const occupiedSorted = useMemo(
-    () => [...roomPlayers].sort((a, b) => (a.seat ?? 0) - (b.seat ?? 0)),
-    [roomPlayers],
-  )
-  const occupiedCount = Math.max(occupiedSorted.length, 1)
+  const needsChooseSeat = seatAssignment === 'choose' && me && me.seated === false
+
+  const betweenHands = !game || game.phase === 'idle' || game.phase === 'showdown'
+
+  const nextHandShowSec = useMemo(() => {
+    if (!betweenHands) return null
+    if (nextHandSeconds != null && nextHandSeconds > 0) return nextHandSeconds
+    if (autoDealAt == null) return null
+    const v = Math.max(0, Math.ceil((autoDealAt - now) / 1000))
+    return v > 0 ? v : null
+  }, [betweenHands, autoDealAt, now, nextHandSeconds])
 
   const mergedGamePlayers = useCallback(
     socketId => {
@@ -858,6 +934,46 @@ export default function App() {
                   </option>
                 ))}
               </select>
+              <label style={{ display: 'block', fontSize: 11, color: '#6a7a8a', marginBottom: 8 }}>Seat assignment</label>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+                <button
+                  type="button"
+                  onClick={() => setCreateSeatAssignment('random')}
+                  style={{
+                    flex: 1,
+                    padding: '10px 12px',
+                    borderRadius: 10,
+                    border: createSeatAssignment === 'random' ? '2px solid #6eb5ff' : '1px solid #2a3544',
+                    background: createSeatAssignment === 'random' ? 'rgba(40,90,140,0.35)' : '#0a0e14',
+                    color: createSeatAssignment === 'random' ? '#cde4ff' : '#7a8a9a',
+                    fontWeight: createSeatAssignment === 'random' ? 700 : 500,
+                    fontSize: 13,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Random
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCreateSeatAssignment('choose')}
+                  style={{
+                    flex: 1,
+                    padding: '10px 12px',
+                    borderRadius: 10,
+                    border: createSeatAssignment === 'choose' ? '2px solid #6eb5ff' : '1px solid #2a3544',
+                    background: createSeatAssignment === 'choose' ? 'rgba(40,90,140,0.35)' : '#0a0e14',
+                    color: createSeatAssignment === 'choose' ? '#cde4ff' : '#7a8a9a',
+                    fontWeight: createSeatAssignment === 'choose' ? 700 : 500,
+                    fontSize: 13,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Choose
+                </button>
+              </div>
+              <p style={{ margin: '-6px 0 14px', fontSize: 11, color: '#5a6a7a', lineHeight: 1.4 }}>
+                Random: auto seat on join. Choose: players pick an empty seat on a table map.
+              </p>
               <label style={{ display: 'block', fontSize: 11, color: '#6a7a8a', marginBottom: 4 }}>Password (optional)</label>
               <input
                 type="password"
@@ -1051,21 +1167,22 @@ export default function App() {
                     <div style={{ fontSize: 12, color: '#7a8a9a' }}>
                       {typeLabel[row.gameType] || row.gameType} · ${row.smallBlind}/${row.bigBlind} · {row.playersSeated}/{row.maxSeats}{' '}
                       seated
+                      {row.seatAssignment === 'choose' ? ' · pick seat' : ''}
                       {row.hasPassword ? ' · private' : ''}
                     </div>
                   </div>
                   <button
                     type="button"
-                    disabled={joiningTable || row.playersSeated >= row.maxSeats}
+                    disabled={joinTableDisabled(row, joiningTable)}
                     onClick={() => openJoinTable(row)}
                     style={{
                       padding: '10px 18px',
                       borderRadius: 10,
                       border: 'none',
-                      background: joiningTable || row.playersSeated >= row.maxSeats ? '#3a4a55' : '#1e5a8a',
+                      background: joinTableDisabled(row, joiningTable) ? '#3a4a55' : '#1e5a8a',
                       color: '#fff',
                       fontWeight: 700,
-                      cursor: joiningTable || row.playersSeated >= row.maxSeats ? 'not-allowed' : 'pointer',
+                      cursor: joinTableDisabled(row, joiningTable) ? 'not-allowed' : 'pointer',
                     }}
                   >
                     Join
@@ -1127,7 +1244,7 @@ export default function App() {
           )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          {isSuper && game && game.phase !== 'idle' && (
+          {isSuper && game && game.phase !== 'idle' && game.phase !== 'showdown' && (
             <button
               type="button"
               onClick={() => hostReveal(!game.showAllCards)}
@@ -1144,7 +1261,7 @@ export default function App() {
               {game.showAllCards ? 'Hide cards' : 'Reveal cards'}
             </button>
           )}
-          {isHost && (!game || game.phase === 'idle') && (
+          {isHost && betweenHands && (
             <>
               <button type="button" onClick={hostDeal} style={hostMiniBtn}>
                 Deal
@@ -1170,7 +1287,7 @@ export default function App() {
             />
             4-colour deck
           </label>
-          {isHost && (!game || game.phase === 'idle') && (
+          {isHost && betweenHands && (
             <select
               value={gameType}
               onChange={e => changeGameType(e.target.value)}
@@ -1199,9 +1316,30 @@ export default function App() {
         </div>
       )}
 
-      {game?.phase === 'idle' && autoSecs != null && autoSecs > 0 && (
-        <div style={{ margin: '8px 16px', padding: 10, background: '#0f1822', border: '1px solid #2a4058', fontSize: 13, color: '#8ab8e8' }}>
-          Next hand in <strong>{autoSecs}s</strong> (auto)
+      {isSuper && game?.phase === 'showdown' && (
+        <div style={{ margin: '0 16px 8px', padding: 4 }}>
+          <button
+            type="button"
+            onClick={hostNextHand}
+            style={{
+              width: '100%',
+              maxWidth: 560,
+              margin: '0 auto',
+              display: 'block',
+              padding: '20px 28px',
+              fontSize: 22,
+              fontWeight: 900,
+              letterSpacing: 0.5,
+              borderRadius: 16,
+              border: '4px solid #ffe082',
+              cursor: 'pointer',
+              color: '#2a1800',
+              background: 'linear-gradient(180deg, #ffecb3 0%, #ffc107 35%, #ff8f00 100%)',
+              boxShadow: '0 8px 28px rgba(255, 193, 7, 0.55), inset 0 1px 0 rgba(255,255,255,0.35)',
+            }}
+          >
+            Deal Next Hand
+          </button>
         </div>
       )}
 
@@ -1211,20 +1349,126 @@ export default function App() {
           <div
             style={{
               flex: 1,
-              minHeight: Math.max(520, Math.min(720, Math.round(vw * 1.15))),
+              minHeight: Math.max(600, Math.min(880, Math.round(vw * 1.38))),
               position: 'relative',
               borderRadius: 20,
               overflow: 'auto',
-              background: 'radial-gradient(ellipse 55% 42% at 50% 48%, #1e4a7a 0%, #153a62 35%, #0f2848 100%)',
+              background: 'radial-gradient(ellipse 78% 62% at 50% 50%, #1e4a7a 0%, #153a62 38%, #0f2848 100%)',
               border: '3px solid #2a5080',
-              boxShadow: 'inset 0 0 80px rgba(0,40,80,0.35), 0 12px 40px rgba(0,0,0,0.45)',
+              boxShadow: 'inset 0 0 100px rgba(0,40,80,0.38), 0 12px 40px rgba(0,0,0,0.45)',
             }}
           >
+            {needsChooseSeat && (
+              <div
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  zIndex: 15,
+                  borderRadius: 17,
+                  background: 'radial-gradient(ellipse 78% 62% at 50% 50%, #1e4a7a 0%, #153a62 38%, #0f2848 100%)',
+                  boxShadow: 'inset 0 0 100px rgba(0,40,80,0.38)',
+                  overflow: 'hidden',
+                }}
+              >
+                <div style={{ textAlign: 'center', padding: '24px 16px 8px' }}>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: '#6eb5ff', marginBottom: 6 }}>Choose your seat</div>
+                  <div style={{ fontSize: 13, color: '#8ab8e8' }}>Tap a glowing seat to sit. Taken seats show the player name.</div>
+                </div>
+                {Array.from({ length: maxSeats }, (_, i) => {
+                  const occupant = roomPlayers.find(p => p.seated !== false && typeof p.seat === 'number' && p.seat === i)
+                  const pos = seatPosition(i, maxSeats, 51, 53)
+                  return (
+                    <div
+                      key={i}
+                      style={{
+                        position: 'absolute',
+                        ...pos,
+                        width: 'max-content',
+                        zIndex: 2,
+                      }}
+                    >
+                      {occupant ? (
+                        <div
+                          title={occupant.name}
+                          style={{
+                            width: 64,
+                            height: 64,
+                            borderRadius: '50%',
+                            border: '2px solid #4a5a68',
+                            background: 'rgba(0,0,0,0.55)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: 10,
+                            fontWeight: 700,
+                            color: '#c8d8e8',
+                            textAlign: 'center',
+                            padding: 6,
+                            lineHeight: 1.15,
+                            boxSizing: 'border-box',
+                            wordBreak: 'break-word',
+                            cursor: 'default',
+                          }}
+                        >
+                          {occupant.name.length > 14 ? `${occupant.name.slice(0, 12)}…` : occupant.name}
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => chooseSeat(i)}
+                          aria-label={`Sit in seat ${i + 1}`}
+                          style={{
+                            width: 56,
+                            height: 56,
+                            borderRadius: '50%',
+                            border: '2px solid #8ec8ff',
+                            background: 'rgba(35,90,150,0.5)',
+                            cursor: 'pointer',
+                            boxShadow:
+                              '0 0 16px rgba(110,181,255,0.95), 0 0 32px rgba(110,181,255,0.45), inset 0 0 14px rgba(255,255,255,0.12)',
+                          }}
+                        />
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            {nextHandShowSec != null && nextHandShowSec > 0 && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: '50%',
+                  top: '50%',
+                  transform: 'translate(-50%,-50%)',
+                  zIndex: 12,
+                  pointerEvents: 'none',
+                  textAlign: 'center',
+                  padding: '18px 28px',
+                  borderRadius: 16,
+                  background: 'rgba(0,0,0,0.72)',
+                  border: '2px solid rgba(255,213,79,0.55)',
+                  boxShadow: '0 12px 40px rgba(0,0,0,0.55)',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 28,
+                    fontWeight: 900,
+                    color: '#ffe082',
+                    letterSpacing: 1,
+                    textShadow: '0 2px 12px rgba(0,0,0,0.8)',
+                  }}
+                >
+                  New hand in {nextHandShowSec}…
+                </div>
+              </div>
+            )}
             <div
               style={{
                 position: 'absolute',
                 left: '50%',
-                top: '42%',
+                top: '44%',
                 transform: 'translate(-50%,-50%)',
                 textAlign: 'center',
                 zIndex: 1,
@@ -1282,15 +1526,13 @@ export default function App() {
               </div>
             </div>
 
-            {seatSlots.map((slot, i) => {
-              const occIdx = slot ? occupiedSorted.findIndex(p => p.seat === i) : -1
-              const pos = slot
-                ? seatPosition(occIdx >= 0 ? occIdx : 0, occupiedCount, 44, 46)
-                : seatPosition(i, tableSeats, 40, 42)
-              const gp = slot ? mergedGamePlayers(slot.socketId) : null
-              const active = gp && game?.players?.[game.currentPlayer]?.socketId === slot?.socketId
+            {orderedSeats.map((slot, occIdx) => {
+              const n = Math.max(orderedSeats.length, 1)
+              const pos = seatPosition(occIdx, n, 51, 53)
+              const gp = mergedGamePlayers(slot.socketId)
+              const active = gp && game?.players?.[game.currentPlayer]?.socketId === slot.socketId
               const winner = gp && game?.winners?.includes(slot.socketId)
-              const cards = slot ? cardsForSeat(slot) : null
+              const cards = cardsForSeat(slot)
               const showCards =
                 cards &&
                 cards.length > 0 &&
@@ -1298,13 +1540,13 @@ export default function App() {
 
               return (
                 <div
-                  key={slot ? slot.socketId : `empty-${i}`}
+                  key={slot.socketId}
                   style={{
                     position: 'absolute',
                     ...pos,
                     width: 'max-content',
                     maxWidth: 'min(92vw, 360px)',
-                    zIndex: slot ? 3 : 2,
+                    zIndex: 3,
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'center',
@@ -1315,21 +1557,15 @@ export default function App() {
                 >
                   <div
                     style={{
-                      width: slot ? holeRowW * holeScale : undefined,
-                      minHeight: slot ? holeRowH * holeScale : undefined,
+                      width: holeRowW * holeScale,
+                      minHeight: holeRowH * holeScale,
                       maxWidth: '100%',
                       display: 'flex',
                       justifyContent: 'center',
                       alignItems: 'flex-start',
                     }}
                   >
-                    <div
-                      style={
-                        slot
-                          ? { transform: `scale(${holeScale})`, transformOrigin: 'top center' }
-                          : undefined
-                      }
-                    >
+                    <div style={{ transform: `scale(${holeScale})`, transformOrigin: 'top center' }}>
                       <div
                         style={{
                           display: 'flex',
@@ -1339,53 +1575,60 @@ export default function App() {
                           maxWidth: holeRowW,
                         }}
                       >
-                    {!slot ? (
-                      <span style={{ fontSize: 18, color: '#3a5a78' }}>Empty</span>
-                    ) : showCards ? (
-                      cards.map((c, j) => (
-                        <Card
-                          key={j}
-                          variant="hole"
-                          card={c}
-                          fourColor={fourColor}
-                          back={!c || !c.r}
-                        />
-                      ))
-                    ) : cards ? (
-                      cards.map((_, j) => (
-                        <Card key={j} variant="hole" back fourColor={fourColor} />
-                      ))
-                    ) : (
-                      <span style={{ fontSize: 18, color: '#5a7a9a' }}>—</span>
-                    )}
+                        {showCards ? (
+                          cards.map((c, j) => (
+                            <Card
+                              key={j}
+                              variant="hole"
+                              card={c}
+                              fourColor={fourColor}
+                              back={!c || !c.r}
+                            />
+                          ))
+                        ) : cards ? (
+                          cards.map((_, j) => (
+                            <Card key={j} variant="hole" back fourColor={fourColor} />
+                          ))
+                        ) : (
+                          <span style={{ fontSize: 18, color: '#5a7a9a' }}>—</span>
+                        )}
                       </div>
                     </div>
                   </div>
-                  {slot && (
+                  <div
+                    style={{
+                      padding: '10px 16px',
+                      borderRadius: 12,
+                      background: winner ? 'rgba(40,80,40,0.85)' : active ? 'rgba(40,60,90,0.9)' : 'rgba(0,0,0,0.5)',
+                      border: `2px solid ${winner ? '#5a8a5a' : active ? '#6eb5ff' : '#2a4058'}`,
+                      fontSize: 20,
+                      maxWidth: 'min(96vw, 1200px)',
+                      textAlign: 'center',
+                      color: '#e8eef8',
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {slot.name}
+                      {slot.socketId === sid ? ' · you' : ''}
+                    </div>
                     <div
                       style={{
-                        padding: '10px 16px',
-                        borderRadius: 12,
-                        background: winner ? 'rgba(40,80,40,0.85)' : active ? 'rgba(40,60,90,0.9)' : 'rgba(0,0,0,0.5)',
-                        border: `2px solid ${winner ? '#5a8a5a' : active ? '#6eb5ff' : '#2a4058'}`,
-                        fontSize: 20,
-                        maxWidth: 'min(96vw, 1200px)',
-                        textAlign: 'center',
-                        color: '#e8eef8',
+                        marginTop: 4,
+                        minHeight: 28,
+                        fontSize: slot.unlimitedChips ? 26 : 17,
+                        fontWeight: slot.unlimitedChips ? 900 : 500,
+                        color: slot.unlimitedChips ? '#ffd54f' : '#9ab8d8',
+                        fontVariantNumeric: 'tabular-nums',
+                        lineHeight: 1.1,
+                        textShadow: slot.unlimitedChips ? '0 0 12px rgba(255,213,79,0.35)' : 'none',
                       }}
                     >
-                      <div style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {slot.name}
-                        {slot.socketId === sid ? ' · you' : ''}
-                      </div>
-                      <div style={{ fontSize: 17, color: '#9ab8d8', fontVariantNumeric: 'tabular-nums' }}>
-                        {slot.unlimitedChips ? '∞' : `$${slot.stack ?? 0}`}
-                      </div>
-                      {gp?.handLabel && (
-                        <div style={{ fontSize: 15, color: '#a8d8a8' }}>{gp.handLabel}</div>
-                      )}
+                      {slot.unlimitedChips ? '∞' : `$${slot.stack ?? 0}`}
                     </div>
-                  )}
+                    {gp?.handLabel && (
+                      <div style={{ fontSize: 15, color: '#a8d8a8' }}>{gp.handLabel}</div>
+                    )}
+                  </div>
                 </div>
               )
             })}
@@ -1473,7 +1716,7 @@ export default function App() {
             maxHeight: '100%',
           }}
         >
-          {roomPlayers.length < 2 && !game && (
+          {roomPlayers.filter(p => p.seated !== false).length < 2 && !game && (
             <div style={{ padding: 12, background: '#101820', borderRadius: 10, border: '1px solid #1a2838', fontSize: 12, color: '#6a7a8a' }}>
               Invite players:{' '}
               <span style={{ color: '#6eb5ff', wordBreak: 'break-all' }}>{shareUrl}</span>
@@ -1573,7 +1816,14 @@ export default function App() {
               PLAYERS ({roomPlayers.length})
             </div>
             <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
-            {[...roomPlayers].sort((a, b) => (a.seat ?? 0) - (b.seat ?? 0)).map(p => (
+            {[...roomPlayers]
+              .sort((a, b) => {
+                const wa = a.seated === false ? 1 : 0
+                const wb = b.seated === false ? 1 : 0
+                if (wa !== wb) return wa - wb
+                return (a.seat ?? 999) - (b.seat ?? 999)
+              })
+              .map(p => (
               <div
                 key={p.socketId}
                 style={{
@@ -1588,18 +1838,22 @@ export default function App() {
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
                   <span
+                    title={p.seated === false ? 'Watching (no seat)' : 'Seated'}
                     style={{
                       width: 8,
                       height: 8,
                       borderRadius: '50%',
-                      background: p.online ? '#4caf50' : '#444',
+                      background: p.seated === false ? '#7a8a9a' : p.online ? '#4caf50' : '#444',
                       flexShrink: 0,
                     }}
                   />
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', color: p.socketId === sid ? '#8bc4ff' : '#c8d4e0' }}>
-                    <span style={{ color: '#5a6a7a', fontSize: 10, marginRight: 4 }}>#{typeof p.seat === 'number' ? p.seat + 1 : '?'}</span>
+                    <span style={{ color: '#5a6a7a', fontSize: 10, marginRight: 4 }}>
+                      {p.seated === false ? '—' : `#${typeof p.seat === 'number' ? p.seat + 1 : '?'}`}
+                    </span>
                     {p.name}
                     {p.isHost ? ' · host' : ''}
+                    {p.seated === false ? <span style={{ color: '#6a7a8a' }}> · watching</span> : null}
                   </span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>

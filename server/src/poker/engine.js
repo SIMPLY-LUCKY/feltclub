@@ -149,10 +149,23 @@ export function statKey(name) {
   return String(name || '').trim().toLowerCase()
 }
 
+/** Seated players only, in seat order (for poker hand / blinds). */
+export function getSeatedPlayersSorted(room) {
+  return (room.players || [])
+    .filter(p => p.seated && typeof p.seat === 'number' && p.seat >= 0)
+    .sort((a, b) => a.seat - b.seat)
+}
+
+function sameSeatedLineup(prevGame, seatedSorted) {
+  if (!prevGame?.players || prevGame.players.length !== seatedSorted.length) return false
+  return prevGame.players.every((gp, i) => gp.socketId === seatedSorted[i].socketId)
+}
+
 export function canStartHand(room) {
   const bb = roomBB(room)
-  if (room.players.length < 2) return false
-  for (const p of room.players) {
+  const seated = getSeatedPlayersSorted(room)
+  if (seated.length < 2) return false
+  for (const p of seated) {
     if (p.unlimitedChips) continue
     if (p.stack < bb) return false
   }
@@ -190,10 +203,11 @@ export function startHand(room) {
   const deck = shuffle(mkDeck())
   let di = 0
   const prev = room.game
-  const n = room.players.length
-  const dealer = prev && prev.players?.length === n ? (prev.dealer + 1) % n : 0
+  const seated = getSeatedPlayersSorted(room)
+  const n = seated.length
+  const dealer = sameSeatedLineup(prev, seated) ? ((prev.dealer + 1) % n) : 0
 
-  const gamePlayers = room.players.map(rp => ({
+  const gamePlayers = seated.map(rp => ({
     socketId: rp.socketId,
     name: rp.name,
     seat: rp.seat,
@@ -297,11 +311,11 @@ function endFoldWin(room, g, winner) {
   if (!winner.unlimitedChips) winner.stack += g.pot
   g.log.push(`${winner.name} wins $${g.pot}`)
   g.pot = 0
-  g.phase = 'idle'
   g.currentPlayer = -1
   g.toAct = []
   g.winners = [winner.socketId]
   g.showAllCards = false
+  g.phase = 'showdown'
   recordStats(room, g)
   delete g.handStartStacks
   syncAllStacksToRoom(g, room)
@@ -420,7 +434,7 @@ function advanceStreet(room) {
     return endFoldWin(room, g, alive[0])
   }
   if (alive.length === 0) {
-    g.phase = 'idle'
+    g.phase = 'showdown'
     g.currentPlayer = -1
     g.toAct = []
     g.pot = 0
@@ -459,7 +473,6 @@ function advanceStreet(room) {
       g.log.push(`${x.p.name}: ${HAND_NAMES[x.s[0]]}`)
     }
     awardBySidePots(g, room)
-    g.phase = 'idle'
     g.currentPlayer = -1
     g.toAct = []
     recordStats(room, g)

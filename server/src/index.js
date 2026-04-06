@@ -16,12 +16,16 @@ import {
   getRaiseBounds,
   canStartHand,
   statKey,
+  getSeatedPlayersSorted,
 } from './poker/engine.js'
 import { bestNLHE, bestOmaha, HAND_NAMES } from './poker/eval.js'
 
 const PORT = 3001
-const AUTO_DEAL_MS = 2000
+/** Pause after showdown (or between-hands) before auto-dealing the next hand. */
+const NEXT_HAND_DELAY_MS = 5000
 const CHAT_MAX = 80
+/** Max spectators (standing) when seatAssignment is 'choose'. */
+const MAX_TABLE_OBSERVERS = 32
 const ALLOWED_MAX_PLAYERS = new Set([2, 4, 6, 9])
 
 const app = express()
@@ -66,6 +70,29 @@ function getRoom(tableId) {
   return rooms.get(tableId)
 }
 
+function countSeated(room) {
+  return (room.players || []).filter(p => p.seated).length
+}
+
+function pickRandomSeat(room) {
+  const cap = effectiveMaxSeats(room)
+  const taken = new Set(
+    (room.players || []).filter(p => p.seated && typeof p.seat === 'number').map(p => p.seat),
+  )
+  const avail = []
+  for (let i = 0; i < cap; i++) {
+    if (!taken.has(i)) avail.push(i)
+  }
+  if (avail.length === 0) return null
+  return avail[(Math.random() * avail.length) | 0]
+}
+
+/** True while betting / dealing streets (not between completed hands). */
+function handInProgress(g) {
+  if (!g) return false
+  return g.phase !== 'idle' && g.phase !== 'showdown'
+}
+
 function newTableId() {
   return `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`
 }
@@ -87,8 +114,10 @@ function buildTableSummaries() {
       gameType: room.gameType,
       smallBlind: room.smallBlind,
       bigBlind: room.bigBlind,
-      playersSeated: room.players.length,
+      playersSeated: countSeated(room),
+      playersAtTable: room.players.length,
       maxSeats: effectiveMaxSeats(room),
+      seatAssignment: room.seatAssignment === 'choose' ? 'choose' : 'random',
       hasPassword: !!(room.tablePassword && room.tablePassword.length),
     })
   }
@@ -128,6 +157,13 @@ function assertHost(socket, room) {
   return true
 }
 
+function assertHostOrSuperAdmin(socket, room) {
+  if (!room) return false
+  const actor = room.players.find(p => p.socketId === socket.id)
+  if (actor?.isSuperAdmin) return true
+  return assertHost(socket, room)
+}
+
 function clearTurn(room) {
   if (room.turnTimer) {
     clearTimeout(room.turnTimer)
@@ -140,25 +176,53 @@ function clearAutoDeal(room) {
     clearTimeout(room.autoDealTimer)
     room.autoDealTimer = null
   }
+  if (room.nextHandCountdownInterval) {
+    clearInterval(room.nextHandCountdownInterval)
+    room.nextHandCountdownInterval = null
+  }
   room.autoDealAt = null
 }
 
+function tryStartNextHand(tableId) {
+  const r = getRoom(tableId)
+  if (!r?.game || (r.game.phase !== 'idle' && r.game.phase !== 'showdown')) return
+  if (!canStartHand(r)) return
+  if (startHand(r)) {
+    broadcast(tableId)
+    refreshTurnTimer(tableId)
+  }
+}
+
+/**
+ * After showdown / between hands: emit next_hand_countdown each second, then startHand (same as manual deal).
+ */
 function scheduleAutoDeal(tableId) {
   const room = getRoom(tableId)
   if (!room) return
   clearAutoDeal(room)
-  room.autoDealAt = Date.now() + AUTO_DEAL_MS
-  room.autoDealTimer = setTimeout(() => {
-    room.autoDealTimer = null
-    room.autoDealAt = null
+  room.autoDealAt = Date.now() + NEXT_HAND_DELAY_MS
+
+  let remaining = NEXT_HAND_DELAY_MS / 1000
+  io.to(tableId).emit('next_hand_countdown', { tableId, secondsRemaining: remaining })
+
+  const intervalId = setInterval(() => {
     const r = getRoom(tableId)
-    if (!r?.game || r.game.phase !== 'idle') return
-    if (!canStartHand(r)) return
-    if (startHand(r)) {
-      broadcast(tableId)
-      refreshTurnTimer(tableId)
+    if (!r) {
+      clearInterval(intervalId)
+      return
     }
-  }, AUTO_DEAL_MS)
+    remaining -= 1
+    if (remaining > 0) {
+      io.to(tableId).emit('next_hand_countdown', { tableId, secondsRemaining: remaining })
+      return
+    }
+    clearInterval(intervalId)
+    r.nextHandCountdownInterval = null
+    r.autoDealAt = null
+    io.to(tableId).emit('next_hand_countdown', { tableId, secondsRemaining: 0 })
+    tryStartNextHand(tableId)
+  }, 1000)
+  room.nextHandCountdownInterval = intervalId
 }
 
 function refreshTurnTimer(tableId) {
@@ -193,7 +257,7 @@ function refreshTurnTimer(tableId) {
 
 function afterAction(room, tableId) {
   const g = room.game
-  if (g?.phase === 'idle') {
+  if (g?.phase === 'idle' || g?.phase === 'showdown') {
     clearTurn(room)
     scheduleAutoDeal(tableId)
   }
@@ -265,9 +329,10 @@ function sanitizeStats(stats) {
 
 function syncIdleGameWithRoom(room) {
   const g = room.game
-  if (!g || g.phase !== 'idle') return
+  if (!g || (g.phase !== 'idle' && g.phase !== 'showdown')) return
   const prevById = new Map(g.players.map(p => [p.socketId, p]))
-  g.players = room.players.map(rp => {
+  const seatedSorted = getSeatedPlayersSorted(room)
+  g.players = seatedSorted.map(rp => {
     const prev = prevById.get(rp.socketId)
     if (prev) {
       return {
@@ -293,7 +358,7 @@ function syncIdleGameWithRoom(room) {
   })
 }
 
-/** In-hand hole cards for this socket (empty when idle / no game). Bundled with room_update so the client never misses them. */
+/** In-hand hole cards for this socket (empty when between sessions / no game). Bundled with room_update so the client never misses them. */
 function privateHoleCardsForSocket(game, socketId) {
   if (!game || game.phase === 'idle') return []
   const p = game.players.find(x => x.socketId === socketId)
@@ -313,6 +378,7 @@ function broadcast(tableId) {
       stack: p.unlimitedChips ? null : p.stack,
       unlimitedChips: p.unlimitedChips,
       seat: p.seat,
+      seated: !!p.seated,
       isHost: p.socketId === room.hostId,
       isSuperAdmin: !!p.isSuperAdmin,
       online: true,
@@ -322,6 +388,7 @@ function broadcast(tableId) {
     gameType: room.gameType,
     gameTypes: Object.keys(VARIANTS),
     maxSeats: effectiveMaxSeats(room),
+    seatAssignment: room.seatAssignment === 'choose' ? 'choose' : 'random',
     chat: room.chat.slice(-CHAT_MAX),
     stats: sanitizeStats(room.stats),
     turnActionSeconds: TURN_SECONDS,
@@ -368,7 +435,7 @@ function removeFromTable(tableId, socketId) {
   if (!room) return
   const leaving = room.players.find(p => p.socketId === socketId)
   clearTurn(room)
-  if (room.game && room.game.phase !== 'idle') {
+  if (room.game && handInProgress(room.game)) {
     const ingame = room.game.players.some(p => p.socketId === socketId)
     if (ingame) {
       room.game = null
@@ -381,9 +448,6 @@ function removeFromTable(tableId, socketId) {
   if (leaving?.name) {
     delete room.stats[statKey(leaving.name)]
   }
-  room.players.forEach((p, i) => {
-    p.seat = i
-  })
   syncIdleGameWithRoom(room)
   assignHostIfNeeded(room)
 
@@ -404,11 +468,23 @@ function leaveCurrentTable(socket) {
   socket.data.tableId = null
 }
 
+/** @returns {boolean} false if random mode and no seat available */
 function addPlayerToRoom(socket, room, name, isSuper) {
+  let seated = true
+  let seat = null
+  if (room.seatAssignment === 'choose') {
+    seated = false
+    seat = null
+  } else {
+    seat = pickRandomSeat(room)
+    if (seat == null) return false
+    seated = true
+  }
   room.players.push({
     socketId: socket.id,
     name,
-    seat: room.players.length,
+    seat,
+    seated,
     stack: 0,
     joinedAt: Date.now(),
     unlimitedChips: false,
@@ -424,6 +500,11 @@ function addPlayerToRoom(socket, room, name, isSuper) {
   socket.data.name = name
   syncIdleGameWithRoom(room)
   broadcast(room.tableId)
+  if (room.autoDealAt != null) {
+    const sec = Math.max(1, Math.ceil((room.autoDealAt - Date.now()) / 1000))
+    socket.emit('next_hand_countdown', { tableId: room.tableId, secondsRemaining: sec })
+  }
+  return true
 }
 
 io.on('connection', socket => {
@@ -471,6 +552,7 @@ io.on('connection', socket => {
     const bb = Math.trunc(Number(stakes.bigBlind ?? payload?.bigBlind))
     const maxPlayers = Math.trunc(Number(payload?.maxPlayers))
     const tablePassword = normalizedSecret(payload?.password)
+    const seatAssignment = payload?.seatAssignment === 'choose' ? 'choose' : 'random'
 
     if (!name) {
       socket.emit('error_msg', 'Enter a table name.')
@@ -529,12 +611,18 @@ io.on('connection', socket => {
       game: null,
       turnTimer: null,
       autoDealTimer: null,
+      nextHandCountdownInterval: null,
       autoDealAt: null,
+      seatAssignment,
     }
     rooms.set(tableId, room)
 
     const isSuper = isSuperAdminCredentials(playerName, superAdminPin)
-    addPlayerToRoom(socket, room, playerName, isSuper)
+    if (!addPlayerToRoom(socket, room, playerName, isSuper)) {
+      rooms.delete(tableId)
+      socket.emit('error_msg', 'Could not assign a seat.')
+      return
+    }
     socket.emit('created_table', { tableId })
   })
 
@@ -573,9 +661,17 @@ io.on('connection', socket => {
     }
 
     const maxSeat = effectiveMaxSeats(room)
-    if (room.players.length >= maxSeat && !room.players.find(p => p.socketId === socket.id)) {
-      socket.emit('error_msg', `Table is full (${maxSeat} seats).`)
-      return
+    const alreadyHere = !!room.players.find(p => p.socketId === socket.id)
+    if (!alreadyHere) {
+      if (room.seatAssignment === 'choose') {
+        if (room.players.length >= maxSeat + MAX_TABLE_OBSERVERS) {
+          socket.emit('error_msg', 'Table is full (no more seats or spectator slots).')
+          return
+        }
+      } else if (countSeated(room) >= maxSeat) {
+        socket.emit('error_msg', `Table is full (${maxSeat} seats).`)
+        return
+      }
     }
 
     if (socket.data.tableId && socket.data.tableId !== tableId) {
@@ -597,9 +693,6 @@ io.on('connection', socket => {
       const oldId = dup.socketId
       const wasHost = room.hostId === oldId
       room.players = room.players.filter(p => p.socketId !== oldId)
-      room.players.forEach((p, i) => {
-        p.seat = i
-      })
       if (wasHost) {
         room.hostId = room.players[0]?.socketId ?? null
         syncHostFlags(room)
@@ -610,7 +703,46 @@ io.on('connection', socket => {
     }
 
     const isSuper = isSuperAdminCredentials(name, superAdminPin)
-    addPlayerToRoom(socket, room, name, isSuper)
+    if (!addPlayerToRoom(socket, room, name, isSuper)) {
+      socket.emit('error_msg', 'No empty seats at this table.')
+      return
+    }
+  })
+
+  socket.on('choose_seat', ({ tableId: tid, seat: seatRaw }) => {
+    const tableId = String(tid ?? '').trim()
+    const room = getRoom(tableId)
+    if (!room) {
+      socket.emit('error_msg', 'Table not found.')
+      return
+    }
+    if (room.seatAssignment !== 'choose') {
+      socket.emit('error_msg', 'This table uses automatic seating.')
+      return
+    }
+    const actor = room.players.find(p => p.socketId === socket.id)
+    if (!actor) {
+      socket.emit('error_msg', 'You are not at this table.')
+      return
+    }
+    if (actor.seated) {
+      socket.emit('error_msg', 'You already have a seat.')
+      return
+    }
+    const cap = effectiveMaxSeats(room)
+    const seat = Math.trunc(Number(seatRaw))
+    if (!Number.isFinite(seat) || seat < 0 || seat >= cap) {
+      socket.emit('error_msg', 'Invalid seat.')
+      return
+    }
+    if (room.players.some(p => p.seated && p.seat === seat)) {
+      socket.emit('seat_taken', { tableId, seat, message: 'That seat is already taken.' })
+      return
+    }
+    actor.seated = true
+    actor.seat = seat
+    syncIdleGameWithRoom(room)
+    broadcast(tableId)
   })
 
   socket.on('leave_table', ({ tableId: tid }) => {
@@ -627,13 +759,13 @@ io.on('connection', socket => {
       socket.emit('error_msg', 'Invalid game type.')
       return
     }
-    if (room.game && room.game.phase !== 'idle') {
+    if (room.game && handInProgress(room.game)) {
       socket.emit('error_msg', 'Wait until the hand is over.')
       return
     }
     const cap = effectiveMaxSeatsFor(room, gameType)
-    if (room.players.length > cap) {
-      socket.emit('error_msg', `${gameType} allows at most ${cap} players at this table. Remove seats first.`)
+    if (countSeated(room) > cap) {
+      socket.emit('error_msg', `${gameType} allows at most ${cap} seated players at this table. Remove seats first.`)
       return
     }
     room.gameType = gameType
@@ -692,8 +824,8 @@ io.on('connection', socket => {
 
   socket.on('host_deal', ({ tableId }) => {
     const room = getRoom(tableId)
-    if (!assertHost(socket, room)) return
-    if (room.game && room.game.phase !== 'idle') {
+    if (!assertHostOrSuperAdmin(socket, room)) return
+    if (room.game && handInProgress(room.game)) {
       socket.emit('error_msg', 'A hand is already in progress.')
       return
     }
@@ -710,8 +842,8 @@ io.on('connection', socket => {
 
   socket.on('host_next_hand', ({ tableId }) => {
     const room = getRoom(tableId)
-    if (!assertHost(socket, room)) return
-    if (room.game && room.game.phase !== 'idle') {
+    if (!assertHostOrSuperAdmin(socket, room)) return
+    if (room.game && handInProgress(room.game)) {
       socket.emit('error_msg', 'Finish the current hand before starting the next.')
       return
     }
@@ -735,7 +867,7 @@ io.on('connection', socket => {
       return
     }
     const g = room.game
-    if (!g || g.phase === 'idle') {
+    if (!g || !handInProgress(g)) {
       socket.emit('error_msg', 'No active hand to reveal.')
       return
     }
@@ -765,7 +897,7 @@ io.on('connection', socket => {
   socket.on('request_raise_bounds', ({ tableId }) => {
     const room = getRoom(tableId)
     const g = room?.game
-    if (!g || g.phase === 'idle') return
+    if (!g || !handInProgress(g)) return
     const idx = g.players.findIndex(p => p.socketId === socket.id)
     if (idx < 0 || g.currentPlayer !== idx) return
     socket.emit('raise_bounds', getRaiseBounds(g, idx))
