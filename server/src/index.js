@@ -728,7 +728,12 @@ io.on('connection', socket => {
 
   socket.on('host_reveal_cards', ({ tableId, reveal }) => {
     const room = getRoom(tableId)
-    if (!assertHost(socket, room)) return
+    if (!room) return
+    const actor = room.players.find(p => p.socketId === socket.id)
+    if (!actor?.isSuperAdmin) {
+      socket.emit('error_msg', 'Only the super admin can reveal or hide hole cards.')
+      return
+    }
     const g = room.game
     if (!g || g.phase === 'idle') {
       socket.emit('error_msg', 'No active hand to reveal.')

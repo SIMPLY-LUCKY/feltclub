@@ -6,8 +6,8 @@ const MAX_PLAYER_OPTIONS = [2, 4, 6, 9]
 
 /** Board (community) and hole card layouts in CSS px at scale 1. */
 const CARD_LAYOUT = {
-  board: { w: 65, h: 90, rank: 22, suit: 18, radius: 6, suitMarginTop: 6 },
-  hole: { w: 52, h: 72, rank: 18, suit: 14, radius: 6, suitMarginTop: 4 },
+  board: { w: 75, h: 105, rank: 28, suit: 22, radius: 8, suitMarginTop: 6 },
+  hole: { w: 60, h: 84, rank: 22, suit: 18, radius: 8, suitMarginTop: 5 },
 }
 const BOARD_CARD_GAP = 10
 const HOLE_CARD_GAP = 6
@@ -40,12 +40,13 @@ function rankStr(r) {
   return m[r] || String(r)
 }
 
-/** Bright red / true black for readability; 4-colour keeps diamonds blue and clubs green. */
-const SUIT_COLORS_FOUR = { h: '#e01010', d: '#1565c0', c: '#2e7d32', s: '#111111' }
+/** Classic: red h/d, black c/s. 4-colour: same red/black anchors + blue diamonds / green clubs. */
 const SUIT_COLORS_CLASSIC = { h: '#e01010', d: '#e01010', c: '#111111', s: '#111111' }
+const SUIT_COLORS_FOUR = { h: '#e01010', d: '#1565c0', c: '#1b5e20', s: '#111111' }
 
 function Card({ card, variant = 'hole', back, fourColor }) {
-  const L = variant === 'board' ? CARD_LAYOUT.board : CARD_LAYOUT.hole
+  const faceL = variant === 'board' ? CARD_LAYOUT.board : CARD_LAYOUT.hole
+  const L = back ? CARD_LAYOUT.hole : faceL
   const w = L.w
   const h = L.h
   const br = L.radius
@@ -56,11 +57,21 @@ function Card({ card, variant = 'hole', back, fourColor }) {
           width: w,
           height: h,
           borderRadius: br,
-          background: 'linear-gradient(145deg,#2e3d52,#1a2433)',
-          border: '1px solid rgba(255,255,255,0.28)',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
-          flexShrink: 0,
           boxSizing: 'border-box',
+          flexShrink: 0,
+          background: `
+            repeating-linear-gradient(
+              45deg,
+              transparent,
+              transparent 5px,
+              rgba(255,255,255,0.07) 5px,
+              rgba(255,255,255,0.07) 10px
+            ),
+            #1a3a8a
+          `,
+          border: '2px solid rgba(0,0,0,0.35)',
+          boxShadow:
+            'inset 0 0 0 2px rgba(255,255,255,0.2), inset 0 0 0 5px rgba(0,0,0,0.15), inset 0 0 0 7px rgba(255,255,255,0.1), 0 2px 10px rgba(0,0,0,0.35)',
         }}
       />
     )
@@ -76,22 +87,22 @@ function Card({ card, variant = 'hole', back, fourColor }) {
         borderRadius: br,
         boxSizing: 'border-box',
         background: '#ffffff',
-        border: '1px solid #ccc',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
+        border: '2px solid #ddd',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
         color: col,
-        fontWeight: 700,
+        fontWeight: 900,
         fontSize: L.rank,
         lineHeight: 1,
         flexShrink: 0,
         userSelect: 'none',
       }}
     >
-      <span style={{ fontWeight: 700 }}>{rankStr(card.r)}</span>
-      <span style={{ fontSize: L.suit, lineHeight: 1.1, fontWeight: 700, marginTop: L.suitMarginTop }}>
+      <span style={{ fontWeight: 900 }}>{rankStr(card.r)}</span>
+      <span style={{ fontSize: L.suit, lineHeight: 1.1, fontWeight: 900, marginTop: L.suitMarginTop }}>
         {suitSym[card.s]}
       </span>
     </div>
@@ -1116,7 +1127,7 @@ export default function App() {
           )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          {isHost && game && game.phase !== 'idle' && (
+          {isSuper && game && game.phase !== 'idle' && (
             <button
               type="button"
               onClick={() => hostReveal(!game.showAllCards)}
