@@ -23,7 +23,7 @@ const PHASE_LABELS = {
   idle: 'Between hands',
 }
 
-const FOUR_COLOR_STORAGE_KEY = 'feltclub-fourColorDeck'
+const FOUR_COLOR_STORAGE_KEY = 'xingwangfa-fourColorDeck'
 
 function readFourColorPref() {
   try {
@@ -616,8 +616,8 @@ export default function App() {
             boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
           }}
         >
-          <h1 style={{ margin: '0 0 8px', fontSize: 28, letterSpacing: 3, color: '#6eb5ff' }}>
-            FELT<span style={{ color: '#5a6a7a', fontWeight: 400 }}>CLUB</span>
+          <h1 style={{ margin: '0 0 8px', fontSize: 28, letterSpacing: 2, color: '#6eb5ff' }}>
+            兴旺发<span style={{ color: '#5a6a7a', fontWeight: 400 }}>传奇牌手</span>
           </h1>
           <div
             style={{
@@ -905,8 +905,8 @@ export default function App() {
         <div style={{ maxWidth: 720, margin: '0 auto' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
             <div>
-              <h1 style={{ margin: 0, fontSize: 26, letterSpacing: 3, color: '#6eb5ff' }}>
-                FELT<span style={{ color: '#5a6a7a', fontWeight: 400 }}>CLUB</span>
+              <h1 style={{ margin: 0, fontSize: 26, letterSpacing: 2, color: '#6eb5ff' }}>
+                兴旺发<span style={{ color: '#5a6a7a', fontWeight: 400 }}>传奇牌手</span>
               </h1>
               <p style={{ margin: '6px 0 0', fontSize: 13, color: '#6a7a8a' }}>
                 Signed in as <strong style={{ color: '#cde4ff' }}>{myName}</strong>
@@ -1110,7 +1110,7 @@ export default function App() {
             ← Lobby
           </button>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <span style={{ fontSize: 20, fontWeight: 800, color: '#6eb5ff', letterSpacing: 2 }}>FELTCLUB</span>
+            <span style={{ fontSize: 20, fontWeight: 800, color: '#6eb5ff', letterSpacing: 2 }}>兴旺发传奇牌手</span>
             <span style={{ fontSize: 12, color: '#7a8a9a' }}>
               {tableName || 'Table'} · {gameType} · ${smallBlind}/${bigBlind}
             </span>
