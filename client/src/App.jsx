@@ -57,6 +57,8 @@ export default function App() {
   const [passwordInput, setPasswordInput] = useState('')
   const [joinLoading, setJoinLoading] = useState(false)
   const joinPendingRef = useRef(false)
+  const wasHostForWelcomeRef = useRef(false)
+  const [superAdminWelcome, setSuperAdminWelcome] = useState(false)
   const [connected, setConnected] = useState(false)
   const [isHost, setIsHost]       = useState(false)
   const [game, setGame]           = useState(null)
@@ -109,6 +111,8 @@ export default function App() {
     })
     socket.on('kicked', () => {
       joinPendingRef.current = false
+      wasHostForWelcomeRef.current = false
+      setSuperAdminWelcome(false)
       setJoinLoading(false)
       setScreen('login'); setMyName(''); setPasswordInput('')
     })
@@ -134,6 +138,21 @@ export default function App() {
     const id = setInterval(() => setNow(Date.now()), 250)
     return () => clearInterval(id)
   }, [game?.turnDeadline, autoDealAt])
+
+  useEffect(() => {
+    if (screen === 'login') {
+      wasHostForWelcomeRef.current = false
+      return
+    }
+    if (screen !== 'table') return
+    if (isHost && !wasHostForWelcomeRef.current) {
+      wasHostForWelcomeRef.current = true
+      setSuperAdminWelcome(true)
+      const t = setTimeout(() => setSuperAdminWelcome(false), 7000)
+      return () => clearTimeout(t)
+    }
+    if (!isHost) wasHostForWelcomeRef.current = false
+  }, [screen, isHost])
 
   const tryJoinTable = useCallback(() => {
     const name = nameInput.trim()
@@ -215,7 +234,7 @@ export default function App() {
         />
         <input
           type="password"
-          placeholder="Password (super admin only)"
+          placeholder="Password"
           value={passwordInput}
           onChange={e => setPasswordInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && tryJoinTable()}
@@ -242,6 +261,32 @@ export default function App() {
 
   return (
     <div style={{ background:'#0a0a0a', minHeight:'100vh', fontFamily:'sans-serif', color:'#e8e0d0', padding:14, display:'flex', flexDirection:'column', gap:10 }}>
+
+      {superAdminWelcome && (
+        <div
+          aria-live="polite"
+          style={{
+            position:'fixed', inset:0, zIndex:9999, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+            padding:24, background:'radial-gradient(ellipse 90% 60% at 50% 42%, rgba(12,10,8,0.94) 0%, rgba(8,8,8,0.72) 45%, rgba(0,0,0,0.35) 100%)',
+            pointerEvents:'none'
+          }}
+        >
+          <div style={{
+            fontSize:'clamp(2.25rem, 11vw, 5.5rem)', fontWeight:800, color:GLD, letterSpacing:'0.08em',
+            textTransform:'uppercase', textAlign:'center', lineHeight:1.05,
+            textShadow:'0 0 40px rgba(201,168,76,0.45), 0 6px 32px rgba(0,0,0,0.9), 0 1px 0 #1a1508'
+          }}>
+            Welcome
+          </div>
+          <div style={{
+            marginTop:'0.15em', fontSize:'clamp(1.75rem, 8vw, 4rem)', fontWeight:700, color:'#e8dcc8', letterSpacing:'0.18em',
+            textTransform:'uppercase', textAlign:'center',
+            textShadow:'0 2px 20px rgba(0,0,0,0.85)'
+          }}>
+            Super Admin
+          </div>
+        </div>
+      )}
 
       {/* Top bar */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
