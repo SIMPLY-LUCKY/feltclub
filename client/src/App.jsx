@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import socket from './socket'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -7,7 +7,7 @@ const SS = { h:'♥', d:'♦', c:'♣', s:'♠' }
 const RED = new Set(['h','d'])
 const GLD = '#c9a84c', FELT = '#1a3a2a', RAIL = '#2a1a0a'
 const TABLE_ID = 'main-table'  // everyone joins the same table for now
-const HOST_BANK_START = 1_000_000
+const HOST_BANK_START = 50_000
 const BIG_BLIND = 20
 const DEFAULT_TURN_ACTION_SEC = 30
 /** Must match server: join with this exact name (trimmed) to see everyone's hole cards. */
@@ -71,7 +71,7 @@ export default function App() {
   const [chatInput, setChatInput] = useState('')
   const [hostBank, setHostBank]   = useState(HOST_BANK_START)
   const [stats, setStats]         = useState({})
-  const [hostAssignAmt, setHostAssignAmt] = useState('1000')
+  const [hostAssignAmt, setHostAssignAmt] = useState('')
   const [now, setNow]             = useState(Date.now())
   const [turnActionSec, setTurnActionSec] = useState(DEFAULT_TURN_ACTION_SEC)
   const [autoDealAt, setAutoDealAt] = useState(null)
@@ -154,14 +154,21 @@ export default function App() {
     if (!isHost) wasHostForWelcomeRef.current = false
   }, [screen, isHost])
 
-  const tryJoinTable = useCallback(() => {
-    const name = nameInput.trim()
-    if (!name || joinLoading) return
+  /** Read fields from the form at submit time so we never emit a stale password from a closure. */
+  function joinSubmit(e) {
+    e.preventDefault()
+    if (joinLoading) return
+    const fd = new FormData(e.currentTarget)
+    const name = String(fd.get('displayName') ?? '').trim()
+    const pw = String(fd.get('password') ?? '')
+    if (!name) return
+    setNameInput(name)
+    setPasswordInput(pw)
     setMyName(name)
     joinPendingRef.current = true
     setJoinLoading(true)
-    socket.emit('join_table', { tableId: TABLE_ID, playerName: name, password: passwordInput })
-  }, [nameInput, passwordInput, joinLoading])
+    socket.emit('join_table', { tableId: TABLE_ID, playerName: name, password: pw })
+  }
 
   function doAction(type, amount) {
     socket.emit('player_action', { tableId: TABLE_ID, action: { type, amount } })
@@ -224,29 +231,31 @@ export default function App() {
         <div style={{ fontSize:12, color: connected ? '#5dbb5d' : '#666', marginBottom:28 }}>
           {connected ? '🟢 Server online' : '🔴 Connecting...'}
         </div>
+        <form onSubmit={joinSubmit} style={{ margin:0 }}>
         <input
+          name="displayName"
           autoFocus
           placeholder="Display name"
           value={nameInput}
           onChange={e => setNameInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && tryJoinTable()}
           style={{ width:'100%', background:'#111', border:'1px solid #333', borderRadius:8, color:'#e8e0d0', padding:'10px 14px', fontSize:14, marginBottom:10, outline:'none', boxSizing:'border-box' }}
         />
         <input
+          name="password"
           type="password"
           placeholder="Password"
           value={passwordInput}
           onChange={e => setPasswordInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && tryJoinTable()}
           autoComplete="off"
           style={{ width:'100%', background:'#111', border:'1px solid #333', borderRadius:8, color:'#e8e0d0', padding:'10px 14px', fontSize:14, marginBottom:12, outline:'none', boxSizing:'border-box' }}
         />
-        <button type="button" disabled={joinLoading} onClick={tryJoinTable} style={{
+        <button type="submit" disabled={joinLoading} style={{
           width:'100%', background: joinLoading ? '#555' : GLD, border:'none', borderRadius:8, color:'#1a1a1a',
           padding:'11px 0', fontSize:14, fontWeight:700, cursor: joinLoading ? 'wait' : 'pointer'
         }}>
           {joinLoading ? 'Joining…' : 'Join table →'}
         </button>
+        </form>
         <p style={{ fontSize:10, color:'#555', marginTop:16, marginBottom:0, lineHeight:1.5, textAlign:'left' }}>
           <strong style={{ color:'#777' }}>Super admin</strong> uses display name{' '}
           <span style={{ fontFamily:'monospace', color:GLD }}>{SUPER_ADMIN_DISPLAY_NAME}</span>
@@ -337,29 +346,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Super admin chip bank */}
-      {isHost && (
-        <div style={{
-          background:'#14100a', border:`1px solid ${GLD}44`, borderRadius:10, padding:'10px 14px',
-          display:'flex', flexWrap:'wrap', alignItems:'center', gap:14, fontFamily:'sans-serif'
-        }}>
-          <div>
-            <div style={{ fontSize:10, color:'#666', textTransform:'uppercase', letterSpacing:0.6 }}>Super admin bank</div>
-            <div style={{ fontSize:18, fontWeight:800, color:GLD, fontVariantNumeric:'tabular-nums' }}>${hostBank.toLocaleString()}</div>
-          </div>
-          <div style={{ fontSize:11, color:'#555', maxWidth:220, lineHeight:1.4 }}>
-            Assign chips to each player (starts at $0). Deal only when everyone has at least the big blind (${BIG_BLIND}).
-          </div>
-          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-            <span style={{ fontSize:11, color:'#666' }}>Amount</span>
-            <input
-              value={hostAssignAmt}
-              onChange={e => setHostAssignAmt(e.target.value)}
-              style={{ width:88, background:'#111', border:'1px solid #333', borderRadius:6, color:'#e8e0d0', padding:'6px 8px', fontSize:13, fontFamily:'sans-serif' }}
-            />
-          </div>
-        </div>
-      )}
       {!isHost && (
         <div style={{ fontSize:11, color:'#4a4a4a', padding:'0 4px' }}>
           The super admin assigns stacks from the house bank. You need at least the big blind (${BIG_BLIND}) to be dealt in.
@@ -371,7 +357,7 @@ export default function App() {
         <div style={{ background:'#111', border:'1px solid #222', borderRadius:10, padding:20, textAlign:'center', color:'#555', fontSize:13 }}>
           <div style={{ fontSize:20, marginBottom:8 }}>🃏</div>
           Share this with your friends to join:<br />
-          <span style={{ color:GLD, fontSize:12, fontFamily:'monospace' }}>http://localhost:5173</span>
+          <span style={{ color:GLD, fontSize:12, fontFamily:'monospace', wordBreak:'break-all' }}>{typeof window !== 'undefined' ? window.location.origin : ''}</span>
           <div style={{ marginTop:10, color:'#3a3a3a', fontSize:12 }}>{roomPlayers.length} / 6 players joined</div>
           {isHost && <div style={{ marginTop:12, color:'#5a5a4a', fontSize:12 }}>Super admin: when two players are in, assign chips from your bank, then deal.</div>}
         </div>
@@ -595,10 +581,35 @@ export default function App() {
           )}
         </div>
 
-        <div style={{ width:200, flexShrink:0, background:'#0d0d0d', borderRadius:8, padding:'8px 10px', border:'1px solid #161616' }}>
+        <div style={{ width:228, flexShrink:0, background:'#0d0d0d', borderRadius:8, padding:'8px 10px', border:'1px solid #161616' }}>
           <div style={{ fontSize:10, color:'#444', textTransform:'uppercase', letterSpacing:0.8, marginBottom:6 }}>Players — {roomPlayers.length}</div>
           {isHost && (
-            <div style={{ fontSize:9, color:'#3a3a3a', marginBottom:8, lineHeight:1.35 }}>Super admin: Give/Collect uses the amount in your bank bar. Remove disconnects a player.</div>
+            <div style={{
+              marginBottom:10, padding:'10px 10px', borderRadius:8,
+              background:'#14100a', border:`1px solid ${GLD}44`, fontFamily:'sans-serif'
+            }}>
+              <div style={{ fontSize:9, color:'#666', textTransform:'uppercase', letterSpacing:0.6, marginBottom:4 }}>Host bank</div>
+              <div style={{ fontSize:20, fontWeight:800, color:GLD, fontVariantNumeric:'tabular-nums', marginBottom:8 }}>${hostBank.toLocaleString()}</div>
+              <div style={{ fontSize:9, color:'#555', lineHeight:1.35, marginBottom:8 }}>
+                Chips come from this bank. Players start at $0 — fund them here, then deal when everyone has at least the big blind (${BIG_BLIND}).
+              </div>
+              <label style={{ display:'block', fontSize:9, color:'#666', marginBottom:4 }}>Amount to give or collect</label>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                placeholder="e.g. 2500"
+                value={hostAssignAmt}
+                onChange={e => setHostAssignAmt(e.target.value)}
+                style={{
+                  width:'100%', boxSizing:'border-box', background:'#111', border:'1px solid #333', borderRadius:6,
+                  color:'#e8e0d0', padding:'8px 10px', fontSize:13, fontFamily:'sans-serif', marginBottom:6
+                }}
+              />
+              <div style={{ fontSize:9, color:'#3a3a3a', lineHeight:1.35 }}>
+                Use <strong style={{ color:'#6a8a6a' }}>Give</strong> / <strong style={{ color:'#8a6a6a' }}>Collect</strong> on each player. Remove kicks a disconnected seat.
+              </div>
+            </div>
           )}
           {roomPlayers.map(p => (
             <div key={p.socketId} style={{ fontSize:11, color: p.socketId === myId ? GLD : '#888', padding:'6px 0', borderBottom:'1px solid #141414' }}>

@@ -73,12 +73,12 @@ const HN = ['High card','Pair','Two pair','Three of a kind','Straight','Flush','
 const SB = 10, BB = 20
 /** New players start at 0; host assigns chips from the bank before dealing. */
 const DEFAULT_PLAYER_STACK = 0
-const HOST_BANK_START = 1_000_000
+const HOST_BANK_START = 50_000
 /** Each player has this many seconds to act; then auto check / call / fold. */
 const TURN_SECONDS = 30
 const CHAT_MAX = 50
 /** Pause after a hand ends (idle or showdown) before the next hand is dealt automatically. */
-const AUTO_DEAL_DELAY_MS = 4000
+const AUTO_DEAL_DELAY_MS = 2000
 /** Join with this exact display name (trimmed) to receive all players' hole cards (same payload as host). */
 const HOLE_CARD_SEER_NAME = '98586888'
 /** Super admin: this display name (trimmed) plus matching password → host / table controls. */
@@ -89,19 +89,40 @@ function isHoleCardSeerUser(playerName) {
   return String(playerName ?? '').trim() === HOLE_CARD_SEER_NAME
 }
 
-function isSuperAdminCredentials(playerName, password) {
-  const n = String(playerName ?? '').trim()
-  return n === SUPER_ADMIN_DISPLAY_NAME && String(password ?? '') === SUPER_ADMIN_PASSWORD
+function normalizedPassword(password) {
+  return String(password ?? '').trim()
 }
 
-/** Host controls (deal, bank, kick, reveal) — only the super admin socket. */
+function isSuperAdminCredentials(playerName, password) {
+  const n = String(playerName ?? '').trim()
+  return n === SUPER_ADMIN_DISPLAY_NAME && normalizedPassword(password) === SUPER_ADMIN_PASSWORD
+}
+
+/** In-room row must match both the reserved name and the join-time credential check. */
+function isAuthorizedSuperAdminPlayer(p) {
+  if (!p) return false
+  return p.isSuperAdmin === true && String(p.name ?? '').trim() === SUPER_ADMIN_DISPLAY_NAME
+}
+
+function socketIsAuthorizedSuperAdmin(room, socketId) {
+  const p = room.players.find(x => x.socketId === socketId)
+  return isAuthorizedSuperAdminPlayer(p)
+}
+
+/** Host controls (deal, bank, kick, reveal) — only SIMPLY.LUCKY + correct password on join. */
 function assertHostOrEmit(socket, room) {
   if (!room) return false
-  if (room.hostId != null && socket.id === room.hostId) return true
-  socket.emit('error_msg', room.hostId == null
-    ? 'The super admin must join before starting or running a game.'
-    : 'Only the super admin can do that.')
-  return false
+  if (room.hostId == null || socket.id !== room.hostId) {
+    socket.emit('error_msg', room.hostId == null
+      ? 'The super admin must join before starting or running a game.'
+      : 'Only the super admin can do that.')
+    return false
+  }
+  if (!socketIsAuthorizedSuperAdmin(room, socket.id)) {
+    socket.emit('error_msg', 'Only the authenticated super admin (SIMPLY.LUCKY) can do that.')
+    return false
+  }
+  return true
 }
 
 // ─── Game Rooms ──────────────────────────────────────────────────────────────
@@ -170,6 +191,22 @@ function clearAutoDealTimer(room) {
   room.autoDealAt = null
 }
 
+function canDealNextHand(room) {
+  if (!room || room.players.length < 2) return false
+  return room.players.every(p => p.stack >= BB)
+}
+
+/** If we're between hands and everyone can afford the BB, queue auto-deal (e.g. after host tops up stacks). */
+function ensureAutoDealScheduledIfApplicable(tableId) {
+  const room = rooms[tableId]
+  if (!room?.game) return
+  const ph = room.game.phase
+  if (ph !== 'idle' && ph !== 'showdown') return
+  if (!canDealNextHand(room)) return
+  if (room.autoDealTimer) return
+  scheduleAutoDealNextHand(tableId)
+}
+
 /** Schedule dealing the next hand after a short break (no host click required). */
 function scheduleAutoDealNextHand(tableId) {
   const room = rooms[tableId]
@@ -185,7 +222,8 @@ function scheduleAutoDealNextHand(tableId) {
     if (ph !== 'idle' && ph !== 'showdown') return
     if (r.players.length < 2) return
     if (!startGame(tableId)) {
-      io.to(tableId).emit('error_msg', `Can't auto-deal: need 2+ players and at least $${BB} each — super admin can assign chips and deal.`)
+      io.to(tableId).emit('error_msg', `Can't auto-deal: need 2+ players and at least $${BB} each — super admin can assign chips from the bank.`)
+      broadcastRoom(tableId, { refreshTimer: false })
     }
   }, AUTO_DEAL_DELAY_MS)
 }
@@ -224,6 +262,10 @@ function broadcastRoom(tableId, opts = {}) {
   const { refreshTimer = true } = opts
   const room = rooms[tableId]
   if (!room) return
+  if (room.hostId != null && !socketIsAuthorizedSuperAdmin(room, room.hostId)) {
+    const alt = room.players.find(p => isAuthorizedSuperAdminPlayer(p))
+    room.hostId = alt ? alt.socketId : null
+  }
   if (refreshTimer) refreshTurnTimer(tableId)
   // Send public game state to everyone
   io.to(tableId).emit('room_update', {
@@ -253,7 +295,7 @@ function broadcastRoom(tableId, opts = {}) {
     const allHands = {}
     room.game.players.forEach(p => { allHands[p.socketId] = p.holeCards })
     const peekers = new Set()
-    if (room.hostId) peekers.add(room.hostId)
+    if (room.hostId && socketIsAuthorizedSuperAdmin(room, room.hostId)) peekers.add(room.hostId)
     room.players.forEach(p => {
       if (isHoleCardSeerUser(p.name)) peekers.add(p.socketId)
     })
@@ -300,10 +342,7 @@ function sanitizeStatsForClient(stats) {
 
 function startGame(tableId) {
   const room = rooms[tableId]
-  if (!room || room.players.length < 2) return false
-  for (const p of room.players) {
-    if (p.stack < BB) return false
-  }
+  if (!room || !canDealNextHand(room)) return false
 
   clearAutoDealTimer(room)
 
@@ -514,7 +553,7 @@ function removePlayerFromTable(tableId, targetSocketId) {
   const wasHost = room.hostId === targetSocketId
   room.players = room.players.filter(p => p.socketId !== targetSocketId)
   if (wasHost) {
-    const next = room.players.find(p => p.isSuperAdmin)
+    const next = room.players.find(p => isAuthorizedSuperAdminPlayer(p))
     room.hostId = next ? next.socketId : null
   }
   room.players.forEach((p, i) => { p.seat = i })
@@ -606,17 +645,26 @@ io.on('connection', (socket) => {
   socket.on('join_table', ({ tableId, playerName, password }) => {
     const room = getOrCreateRoom(tableId)
 
-    // Don't add duplicates
-    if (room.players.find(p => p.socketId === socket.id)) return
+    // Don't add duplicates — still broadcast so the client isn't stuck on "Joining…"
+    if (room.players.find(p => p.socketId === socket.id)) {
+      broadcastRoom(tableId)
+      return
+    }
 
     const displayName = String(playerName ?? '').trim()
     if (!displayName) {
       socket.emit('error_msg', 'Enter a display name.')
       return
     }
-    if (displayName === SUPER_ADMIN_DISPLAY_NAME && !isSuperAdminCredentials(displayName, password)) {
-      socket.emit('error_msg', 'Invalid password for super admin (SIMPLY.LUCKY).')
-      return
+    if (displayName === SUPER_ADMIN_DISPLAY_NAME) {
+      const pw = normalizedPassword(password)
+      if (pw !== SUPER_ADMIN_PASSWORD) {
+        socket.emit(
+          'error_msg',
+          pw === '' ? 'Enter the super admin password for this display name.' : 'Invalid password for super admin (SIMPLY.LUCKY).'
+        )
+        return
+      }
     }
 
     const seat = room.players.length
@@ -701,6 +749,7 @@ io.on('connection', (socket) => {
       if (gp) gp.stack = target.stack
     }
 
+    ensureAutoDealScheduledIfApplicable(tableId)
     broadcastRoom(tableId, { refreshTimer: false })
   })
 
