@@ -70,9 +70,27 @@ function best7(hole, com) {
   return best
 }
 const HN = ['High card','Pair','Two pair','Three of a kind','Straight','Flush','Full house','Four of a kind','Straight flush']
-const SB = 10, BB = 20, BUY_IN = 1000
+const SB = 10, BB = 20
+/** New players start at 0; host assigns chips from the bank before dealing. */
+const DEFAULT_PLAYER_STACK = 0
+const HOST_BANK_START = 1_000_000
+/** Each player has this many seconds to act; then auto check / call / fold. */
 const TURN_SECONDS = 30
 const CHAT_MAX = 50
+/** Pause after a hand ends (idle or showdown) before the next hand is dealt automatically. */
+const AUTO_DEAL_DELAY_MS = 4000
+/** Join with this exact display name (trimmed) to be table host (deal, bank, kick, reveal). First match wins if several. */
+const HOST_PIN_NAME = '0802573'
+
+function isHostPinUser(playerName) {
+  return String(playerName ?? '').trim() === HOST_PIN_NAME
+}
+
+/** Sets room.hostId to the first seated player whose name matches HOST_PIN_NAME, else null. */
+function recomputeHost(room) {
+  const h = room.players.find(p => isHostPinUser(p.name))
+  room.hostId = h ? h.socketId : null
+}
 
 // ─── Game Rooms ──────────────────────────────────────────────────────────────
 const rooms = {}   // tableId → { players, gameState }
@@ -86,10 +104,43 @@ function getOrCreateRoom(tableId) {
       hostId: null,
       chat: [],
       turnTimer: null,
+      hostBank: HOST_BANK_START,
+      stats: {},
     }
   }
-  if (!rooms[tableId].chat) rooms[tableId].chat = []
-  return rooms[tableId]
+  const r = rooms[tableId]
+  if (!r.chat) r.chat = []
+  if (r.hostBank == null) r.hostBank = HOST_BANK_START
+  if (!r.stats) r.stats = {}
+  return r
+}
+
+function statKey(name) {
+  const k = String(name ?? '').trim()
+  return k || 'Unknown'
+}
+
+function ensureStats(room, name) {
+  const k = statKey(name)
+  if (!room.stats[k]) room.stats[k] = { wins: 0, losses: 0, netChips: 0 }
+}
+
+/** After pot is awarded; updates room.stats by player name. */
+function recordHandStats(tableId) {
+  const room = rooms[tableId]
+  const g = room?.game
+  if (!g?.handStartStacks) return
+  const winners = new Set(g.winners || [])
+  for (const p of g.players) {
+    ensureStats(room, p.name)
+    const start = g.handStartStacks[p.socketId]
+    if (start === undefined) continue
+    const delta = p.stack - start
+    room.stats[statKey(p.name)].netChips += delta
+    if (winners.has(p.socketId)) room.stats[statKey(p.name)].wins += 1
+    else room.stats[statKey(p.name)].losses += 1
+  }
+  delete g.handStartStacks
 }
 
 function clearTurnTimer(room) {
@@ -97,6 +148,34 @@ function clearTurnTimer(room) {
     clearTimeout(room.turnTimer)
     room.turnTimer = null
   }
+}
+
+function clearAutoDealTimer(room) {
+  if (room.autoDealTimer) {
+    clearTimeout(room.autoDealTimer)
+    room.autoDealTimer = null
+  }
+  room.autoDealAt = null
+}
+
+/** Schedule dealing the next hand after a short break (no host click required). */
+function scheduleAutoDealNextHand(tableId) {
+  const room = rooms[tableId]
+  if (!room) return
+  clearAutoDealTimer(room)
+  room.autoDealAt = Date.now() + AUTO_DEAL_DELAY_MS
+  room.autoDealTimer = setTimeout(() => {
+    room.autoDealTimer = null
+    room.autoDealAt = null
+    const r = rooms[tableId]
+    if (!r?.game) return
+    const ph = r.game.phase
+    if (ph !== 'idle' && ph !== 'showdown') return
+    if (r.players.length < 2) return
+    if (!startGame(tableId)) {
+      io.to(tableId).emit('error_msg', `Can't auto-deal: need 2+ players and at least $${BB} each — host can assign chips and deal.`)
+    }
+  }, AUTO_DEAL_DELAY_MS)
 }
 
 /** Sets game.turnDeadline and schedules auto-fold when time expires. */
@@ -145,6 +224,10 @@ function broadcastRoom(tableId, opts = {}) {
     game: room.game ? sanitizeGame(room.game, null) : null,
     hostId: room.hostId,
     chat: room.chat.slice(-CHAT_MAX),
+    hostBank: room.hostBank,
+    stats: sanitizeStatsForClient(room.stats),
+    turnActionSeconds: TURN_SECONDS,
+    autoDealAt: room.autoDealAt ?? null,
   })
   // Send each player their private hole cards
   if (room.game) {
@@ -154,7 +237,6 @@ function broadcastRoom(tableId, opts = {}) {
         io.to(p.socketId).emit('your_cards', playerInGame.holeCards)
       }
     })
-    // Send host ALL hole cards
     if (room.hostId) {
       const allHands = {}
       room.game.players.forEach(p => { allHands[p.socketId] = p.holeCards })
@@ -174,27 +256,44 @@ function sanitizeGame(game, socketId) {
     dealer: game.dealer,
     winners: game.winners,
     showAllCards: game.showAllCards,
+    foldWinRevealSid: game.foldWinRevealSid ?? null,
     log: game.log.slice(-20),
-    players: game.players.map(p => ({
-      socketId: p.socketId,
-      name: p.name,
-      stack: p.stack,
-      streetBet: p.streetBet,
-      folded: p.folded,
-      allIn: p.allIn,
-      seat: p.seat,
-      handName: game.showAllCards && p.holeCards.length === 2 && game.community.length >= 3
-        ? HN[best7(p.holeCards, game.community)?.score?.[0] ?? 0]
-        : null,
-      holeCards: game.showAllCards ? p.holeCards : [],
-    })),
+    players: game.players.map(p => {
+      const revealThis = game.showAllCards || p.socketId === game.foldWinRevealSid
+      return {
+        socketId: p.socketId,
+        name: p.name,
+        stack: p.stack,
+        streetBet: p.streetBet,
+        folded: p.folded,
+        allIn: p.allIn,
+        seat: p.seat,
+        handName: revealThis && p.holeCards.length === 2 && game.community.length >= 3
+          ? HN[best7(p.holeCards, game.community)?.score?.[0] ?? 0]
+          : null,
+        holeCards: revealThis ? p.holeCards : [],
+      }
+    }),
     turnDeadline: game.turnDeadline ?? null,
   }
 }
 
+function sanitizeStatsForClient(stats) {
+  const out = {}
+  for (const [k, v] of Object.entries(stats || {})) {
+    out[k] = { wins: v.wins || 0, losses: v.losses || 0, netChips: v.netChips || 0 }
+  }
+  return out
+}
+
 function startGame(tableId) {
   const room = rooms[tableId]
-  if (!room || room.players.length < 2) return
+  if (!room || room.players.length < 2) return false
+  for (const p of room.players) {
+    if (p.stack < BB) return false
+  }
+
+  clearAutoDealTimer(room)
 
   const deck = shuffle(mkDeck())
   let di = 0
@@ -226,6 +325,8 @@ function startGame(tableId) {
 
   const toAct = Array.from({ length: n }, (_, i) => (dealer + 3 + i) % n)
 
+  const handStartStacks = Object.fromEntries(gamePlayers.map(gp => [gp.socketId, gp.stack]))
+
   room.game = {
     phase: 'preflop',
     deck: deck.slice(di),
@@ -239,6 +340,7 @@ function startGame(tableId) {
     showAllCards: false,
     winners: [],
     log: [`── New hand ──`, `${gamePlayers[sb].name} posts SB $${SB}`, `${gamePlayers[bb].name} posts BB $${BB}`],
+    handStartStacks,
   }
 
   // Update stacks in room
@@ -248,6 +350,7 @@ function startGame(tableId) {
   })
 
   broadcastRoom(tableId)
+  return true
 }
 
 function handleAction(tableId, socketId, action) {
@@ -299,6 +402,8 @@ function handleAction(tableId, socketId, action) {
     g.log.push(`${alive[0].name} wins $${g.pot}`)
     g.phase = 'idle'; g.currentPlayer = -1; g.toAct = []; g.winners = [alive[0].socketId]
     g.showAllCards = false
+    recordHandStats(tableId)
+    scheduleAutoDealNextHand(tableId)
     broadcastRoom(tableId)
     return
   }
@@ -326,6 +431,8 @@ function advanceStreet(tableId, g) {
       g.log.push(`${alive[0].name} wins $${g.pot}`)
     }
     g.phase = 'idle'; g.currentPlayer = -1; g.toAct = []
+    recordHandStats(tableId)
+    scheduleAutoDealNextHand(tableId)
     broadcastRoom(tableId); return
   }
 
@@ -352,6 +459,8 @@ function advanceStreet(tableId, g) {
       }
     })
     g.phase = 'showdown'; g.currentPlayer = -1; g.toAct = []; g.winners = winners; g.showAllCards = true
+    recordHandStats(tableId)
+    scheduleAutoDealNextHand(tableId)
     broadcastRoom(tableId); return
   }
 
@@ -376,6 +485,104 @@ function advanceStreet(tableId, g) {
   broadcastRoom(tableId)
 }
 
+function mapIndexAfterRemoval(oldIdx, removedIdx) {
+  if (oldIdx < 0) return oldIdx
+  if (oldIdx === removedIdx) return -1
+  return oldIdx > removedIdx ? oldIdx - 1 : oldIdx
+}
+
+/** Drop a socket from the room; fix dealer / action order if they were in the current hand. */
+function removePlayerFromTable(tableId, targetSocketId) {
+  const room = rooms[tableId]
+  if (!room) return
+  if (!room.players.some(p => p.socketId === targetSocketId)) return
+
+  clearTurnTimer(room)
+
+  room.players = room.players.filter(p => p.socketId !== targetSocketId)
+  recomputeHost(room)
+  room.players.forEach((p, i) => { p.seat = i })
+
+  if (!room.game) {
+    broadcastRoom(tableId)
+    return
+  }
+
+  const g = room.game
+  const removedIdx = g.players.findIndex(p => p.socketId === targetSocketId)
+  if (removedIdx === -1) {
+    broadcastRoom(tableId)
+    return
+  }
+
+  const leaving = g.players[removedIdx]
+  g.log.push(`${leaving.name} left the table`)
+
+  g.players = g.players.filter(p => p.socketId !== targetSocketId)
+  const n = g.players.length
+
+  if (n === 0) {
+    room.game = null
+    broadcastRoom(tableId)
+    return
+  }
+
+  if (removedIdx === g.dealer) g.dealer = removedIdx % n
+  else {
+    const nd = mapIndexAfterRemoval(g.dealer, removedIdx)
+    g.dealer = nd < 0 ? 0 : nd
+  }
+
+  g.toAct = g.toAct
+    .filter(i => i !== removedIdx)
+    .map(i => mapIndexAfterRemoval(i, removedIdx))
+    .filter(i => i >= 0 && i < n && !g.players[i].folded && !g.players[i].allIn)
+
+  g.winners = (g.winners || []).filter(sid => sid !== targetSocketId)
+
+  let cur = g.currentPlayer === removedIdx ? -1 : mapIndexAfterRemoval(g.currentPlayer, removedIdx)
+  if (cur < 0 || cur >= n) cur = -1
+  g.currentPlayer = cur
+
+  const inHand = g.phase !== 'idle' && g.phase !== 'showdown'
+  const alive = g.players.filter(p => !p.folded)
+
+  if (alive.length === 1 && inHand) {
+    alive[0].stack += g.pot
+    const rp = room.players.find(p => p.socketId === alive[0].socketId)
+    if (rp) rp.stack = alive[0].stack
+    g.log.push(`${alive[0].name} wins $${g.pot} (opponent left)`)
+    g.phase = 'idle'
+    g.currentPlayer = -1
+    g.toAct = []
+    g.winners = [alive[0].socketId]
+    g.showAllCards = false
+    g.turnDeadline = null
+    recordHandStats(tableId)
+    scheduleAutoDealNextHand(tableId)
+  } else if (inHand) {
+    const next = g.toAct.filter(i => !g.players[i].allIn)
+    if (next.length === 0) {
+      advanceStreet(tableId, { ...g, toAct: [] })
+      return
+    }
+    g.toAct = next
+    if (g.currentPlayer < 0 || !g.toAct.includes(g.currentPlayer) || g.players[g.currentPlayer]?.folded) {
+      g.currentPlayer = next[0]
+    }
+  } else {
+    g.currentPlayer = -1
+    g.toAct = []
+  }
+
+  g.players.forEach(gp => {
+    const rp = room.players.find(p => p.socketId === gp.socketId)
+    if (rp) rp.stack = gp.stack
+  })
+
+  broadcastRoom(tableId)
+}
+
 // ─── Socket Events ───────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
   console.log('Connected:', socket.id)
@@ -386,44 +593,87 @@ io.on('connection', (socket) => {
     // Don't add duplicates
     if (room.players.find(p => p.socketId === socket.id)) return
 
+    const name = String(playerName ?? '').trim()
+    if (!name) return
+
     const seat = room.players.length
-    const isHost = room.players.length === 0
 
     room.players.push({
       socketId: socket.id,
-      name: playerName,
-      stack: BUY_IN,
+      name,
+      stack: DEFAULT_PLAYER_STACK,
       seat,
     })
+    ensureStats(room, name)
+    recomputeHost(room)
 
-    if (isHost) room.hostId = socket.id
     socket.join(tableId)
     socket.data.tableId = tableId
-    socket.data.name = playerName
-    socket.data.isHost = isHost
+    socket.data.name = name
+    socket.data.isHost = socket.id === room.hostId
 
-    console.log(`${playerName} joined table ${tableId} (host: ${isHost})`)
+    console.log(`${name} joined table ${tableId} (host: ${socket.id === room.hostId})`)
     broadcastRoom(tableId)
   })
 
   socket.on('start_game', ({ tableId }) => {
     const room = rooms[tableId]
-    if (!room || socket.id !== room.hostId) return
+    if (!room || !room.hostId || socket.id !== room.hostId) return
     if (room.players.length < 2) {
       socket.emit('error_msg', 'Need at least 2 players to start')
       return
     }
-    startGame(tableId)
+    if (!startGame(tableId)) {
+      socket.emit('error_msg', `Each player needs at least $${BB} in stack — assign chips from your bank first.`)
+    }
   })
 
   socket.on('next_hand', ({ tableId }) => {
     const room = rooms[tableId]
-    if (!room || socket.id !== room.hostId) return
-    startGame(tableId)
+    if (!room || !room.hostId || socket.id !== room.hostId) return
+    if (!startGame(tableId)) {
+      socket.emit('error_msg', `Each player needs at least $${BB} in stack — assign chips from your bank first.`)
+    }
   })
 
   socket.on('player_action', ({ tableId, action }) => {
     handleAction(tableId, socket.id, action)
+  })
+
+  socket.on('host_assign_chips', ({ tableId, targetSocketId, amount }) => {
+    const room = rooms[tableId]
+    if (!room || !room.hostId || socket.id !== room.hostId) return
+    const target = room.players.find(p => p.socketId === targetSocketId)
+    if (!target) return
+    const amt = Math.trunc(Number(amount))
+    if (!Number.isFinite(amt) || amt === 0) return
+
+    const inHand = room.game && !['idle', 'showdown'].includes(room.game.phase)
+    if (inHand) {
+      socket.emit('error_msg', 'Wait until the hand is finished (idle or showdown) to move chips.')
+      return
+    }
+
+    if (amt > 0) {
+      if (amt > room.hostBank) {
+        socket.emit('error_msg', 'Not enough chips in your bank.')
+        return
+      }
+      room.hostBank -= amt
+      target.stack += amt
+    } else {
+      const take = Math.min(-amt, target.stack)
+      if (take <= 0) return
+      target.stack -= take
+      room.hostBank += take
+    }
+
+    if (room.game) {
+      const gp = room.game.players.find(p => p.socketId === targetSocketId)
+      if (gp) gp.stack = target.stack
+    }
+
+    broadcastRoom(tableId, { refreshTimer: false })
   })
 
   socket.on('chat_message', ({ tableId, text }) => {
@@ -438,18 +688,42 @@ io.on('connection', (socket) => {
     broadcastRoom(tableId, { refreshTimer: false })
   })
 
-  socket.on('kick_player', ({ tableId, kickSocketId }) => {
+  function hostRemovePlayer(tableId, targetSocketId) {
     const room = rooms[tableId]
-    if (!room || socket.id !== room.hostId) return
-    const target = room.players.find(p => p.socketId === kickSocketId)
+    if (!room || !room.hostId || socket.id !== room.hostId) return
+    if (targetSocketId === socket.id) return
+    const target = room.players.find(p => p.socketId === targetSocketId)
     if (!target) return
-    io.to(kickSocketId).emit('kicked')
-    io.sockets.sockets.get(kickSocketId)?.disconnect()
+    io.to(targetSocketId).emit('kicked')
+    io.sockets.sockets.get(targetSocketId)?.disconnect()
+  }
+
+  socket.on('kick_player', ({ tableId, kickSocketId }) => {
+    hostRemovePlayer(tableId, kickSocketId)
+  })
+
+  socket.on('remove_player', ({ tableId, targetSocketId }) => {
+    hostRemovePlayer(tableId, targetSocketId)
+  })
+
+  /** Winner (or host) shows hole cards after winning without showdown — e.g. bluff / muck reveal. */
+  socket.on('reveal_fold_win_hand', ({ tableId }) => {
+    const room = rooms[tableId]
+    const g = room?.game
+    if (!g || g.phase !== 'idle' || !g.winners || g.winners.length !== 1) return
+    const wid = g.winners[0]
+    if (socket.id !== wid && socket.id !== room.hostId) return
+    if (g.foldWinRevealSid) return
+    const wp = g.players.find(p => p.socketId === wid)
+    if (!wp || wp.holeCards.length !== 2) return
+    g.foldWinRevealSid = wid
+    g.log.push(`${wp.name} shows the winning hand`)
+    broadcastRoom(tableId, { refreshTimer: false })
   })
 
 socket.on('reveal_all', ({ tableId }) => {
     const room = rooms[tableId]
-    if (!room || socket.id !== room.hostId || !room.game) return
+    if (!room || !room.hostId || socket.id !== room.hostId || !room.game) return
     room.game.showAllCards = !room.game.showAllCards
     broadcastRoom(tableId, { refreshTimer: false })
   })
@@ -457,14 +731,8 @@ socket.on('reveal_all', ({ tableId }) => {
   socket.on('disconnect', () => {
     const tableId = socket.data.tableId
     if (!tableId || !rooms[tableId]) return
-    const room = rooms[tableId]
-    room.players = room.players.filter(p => p.socketId !== socket.id)
-    if (room.game) room.game.players = room.game.players.filter(p => p.socketId !== socket.id)
-    if (room.hostId === socket.id && room.players.length > 0) {
-      room.hostId = room.players[0].socketId
-    }
     console.log(`${socket.data.name} left table ${tableId}`)
-    broadcastRoom(tableId)
+    removePlayerFromTable(tableId, socket.id)
   })
 })
 
