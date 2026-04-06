@@ -1,6 +1,7 @@
 {
   "name": "feltclub-server",
   "version": "1.0.0",
+  "type": "module",
   "description": "FeltClub poker game server",
   "main": "src/index.js",
   "scripts": {

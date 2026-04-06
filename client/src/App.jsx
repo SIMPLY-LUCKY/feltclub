@@ -1,647 +1,1611 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import socket from './socket'
 
-// ─── Constants ───────────────────────────────────────────────────────────────
-const RS = { 2:'2',3:'3',4:'4',5:'5',6:'6',7:'7',8:'8',9:'9',10:'T',11:'J',12:'Q',13:'K',14:'A' }
-const SS = { h:'♥', d:'♦', c:'♣', s:'♠' }
-const RED = new Set(['h','d'])
-const GLD = '#c9a84c', FELT = '#1a3a2a', RAIL = '#2a1a0a'
-const TABLE_ID = 'main-table'  // everyone joins the same table for now
-const HOST_BANK_START = 50_000
-const BIG_BLIND = 20
-const DEFAULT_TURN_ACTION_SEC = 30
-/** Must match server: join with this exact name (trimmed) to see everyone's hole cards. */
-const HOLE_CARD_SEER_NAME = '98586888'
-/** Must match server: display name for super admin (password required). */
-const SUPER_ADMIN_DISPLAY_NAME = 'SIMPLY.LUCKY'
+const SUPER_ADMIN_NAME = 'SIMPLY.LUCKY'
+const MAX_PLAYER_OPTIONS = [2, 4, 6, 9]
 
-// ─── Card component ───────────────────────────────────────────────────────────
-function Card({ card, sm, back }) {
-  const w = sm ? 36 : 58, h = sm ? 50 : 82
-  const base = {
-    width: w, height: h, borderRadius: sm ? 5 : 7, display: 'flex', flexDirection: 'column',
-    alignItems: 'center', justifyContent: 'center', flexShrink: 0, userSelect: 'none'
+/** Board (community) and hole card layouts in CSS px at scale 1. */
+const CARD_LAYOUT = {
+  board: { w: 52, h: 72, rank: 18, suit: 14, radius: 6, suitMarginTop: 5 },
+  hole: { w: 36, h: 50, rank: 14, suit: 12, radius: 5, suitMarginTop: 4 },
+}
+const BOARD_CARD_GAP = 10
+const HOLE_CARD_GAP = 6
+
+const VARIANT_HOLES = { NLHE: 2, PLO4: 4, PLO5: 5, PLO6: 6 }
+
+const PHASE_LABELS = {
+  preflop: 'Preflop',
+  flop: 'Flop',
+  turn: 'Turn',
+  river: 'River',
+  showdown: 'Showdown',
+  idle: 'Between hands',
+}
+
+const FOUR_COLOR_STORAGE_KEY = 'feltclub-fourColorDeck'
+
+function readFourColorPref() {
+  try {
+    const v = localStorage.getItem(FOUR_COLOR_STORAGE_KEY)
+    if (v === null) return true
+    return v === '1'
+  } catch {
+    return true
   }
-  if (back) return (
-    <div style={{ ...base, background: '#1a3a8a', border: '1px solid #243a7a', position: 'relative' }}>
-      <div style={{ position: 'absolute', inset: 3, border: '1px solid rgba(255,255,255,0.18)', borderRadius: 3 }} />
-    </div>
-  )
-  if (!card) return <div style={{ ...base, background: 'rgba(255,255,255,0.04)', border: '1px dashed rgba(255,255,255,0.1)' }} />
-  const red = RED.has(card.s)
+}
+
+function rankStr(r) {
+  const m = { 11: 'J', 12: 'Q', 13: 'K', 14: 'A', 10: 'T' }
+  return m[r] || String(r)
+}
+
+/** Bright red / true black for readability; 4-colour keeps diamonds blue and clubs green. */
+const SUIT_COLORS_FOUR = { h: '#e01010', d: '#1565c0', c: '#2e7d32', s: '#111111' }
+const SUIT_COLORS_CLASSIC = { h: '#e01010', d: '#e01010', c: '#111111', s: '#111111' }
+
+function Card({ card, variant = 'hole', back, fourColor }) {
+  const L = variant === 'board' ? CARD_LAYOUT.board : CARD_LAYOUT.hole
+  const w = L.w
+  const h = L.h
+  const br = L.radius
+  if (back) {
+    return (
+      <div
+        style={{
+          width: w,
+          height: h,
+          borderRadius: br,
+          background: 'linear-gradient(145deg,#2e3d52,#1a2433)',
+          border: '2px solid rgba(255,255,255,0.35)',
+          boxShadow: '0 0 0 1px rgba(0,0,0,0.2), 0 3px 10px rgba(0,0,0,0.35)',
+          flexShrink: 0,
+          boxSizing: 'border-box',
+        }}
+      />
+    )
+  }
+  const suitSym = { h: '♥', d: '♦', c: '♣', s: '♠' }
+  const fc = fourColor ? SUIT_COLORS_FOUR : SUIT_COLORS_CLASSIC
+  const col = fc[card.s] || '#ccc'
   return (
-    <div style={{ ...base, background: '#fff', border: '1px solid #ccc' }}>
-      <span style={{ fontSize: sm ? 13 : 22, fontWeight: 700, color: red ? '#c0392b' : '#111', lineHeight: 1 }}>{RS[card.r]}</span>
-      <span style={{ fontSize: sm ? 11 : 18, color: red ? '#c0392b' : '#111', lineHeight: 1 }}>{SS[card.s]}</span>
+    <div
+      style={{
+        width: w,
+        height: h,
+        borderRadius: br,
+        boxSizing: 'border-box',
+        background: '#f7f4ec',
+        border: '2px solid #ffffff',
+        boxShadow: '0 0 0 1px rgba(0,0,0,0.12), 0 4px 14px rgba(0,0,0,0.28)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: col,
+        fontWeight: 800,
+        fontSize: L.rank,
+        lineHeight: 1,
+        flexShrink: 0,
+        userSelect: 'none',
+      }}
+    >
+      <span>{rankStr(card.r)}</span>
+      <span style={{ fontSize: L.suit, lineHeight: 1.1, fontWeight: 800, marginTop: L.suitMarginTop }}>
+        {suitSym[card.s]}
+      </span>
     </div>
   )
 }
 
-// ─── Seat positions (6 players) ───────────────────────────────────────────────
-const POSITIONS = [
-  { bottom: 6,  left: '50%', transform: 'translateX(-50%)' },
-  { bottom: 30, right: '2%' },
-  { top: '40%', right: '0%', transform: 'translateY(-50%)' },
-  { top: 16,    right: '14%' },
-  { top: 16,    left: '14%' },
-  { top: '40%', left: '0%',  transform: 'translateY(-50%)' },
-]
+function useViewportWidth() {
+  const [width, setWidth] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 1024))
+  useEffect(() => {
+    const onResize = () => setWidth(window.innerWidth)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  return width
+}
 
-const PHASE_LABELS = { preflop:'Pre-flop', flop:'Flop', turn:'Turn', river:'River', showdown:'Showdown', idle:'' }
+/** Scale factor so a row of `count` cards of width `cardW` + gaps fits within `budgetPx`. */
+function rowFitScale(count, cardW, gap, budgetPx) {
+  if (count <= 0 || budgetPx <= 0) return 1
+  const rowW = count * cardW + Math.max(0, count - 1) * gap
+  return rowW > budgetPx ? Math.max(0.45, budgetPx / rowW) : 1
+}
 
-// ─── Main App ─────────────────────────────────────────────────────────────────
+function seatPosition(i, n, rxPct, ryPct) {
+  const a = (Math.PI * 2 * i) / n - Math.PI / 2
+  return {
+    left: `calc(50% + ${Math.cos(a) * rxPct}%)`,
+    top: `calc(50% + ${Math.sin(a) * ryPct}%)`,
+    transform: 'translate(-50%, -50%)',
+  }
+}
+
 export default function App() {
-  const [screen, setScreen]       = useState('login')
-  const [myName, setMyName]       = useState('')
+  const [connected, setConnected] = useState(socket.connected)
+  const [screen, setScreen] = useState('login')
   const [nameInput, setNameInput] = useState('')
-  const [passwordInput, setPasswordInput] = useState('')
-  const [joinLoading, setJoinLoading] = useState(false)
-  const joinPendingRef = useRef(false)
-  const wasHostForWelcomeRef = useRef(false)
-  const [superAdminWelcome, setSuperAdminWelcome] = useState(false)
-  const [connected, setConnected] = useState(false)
-  const [isHost, setIsHost]       = useState(false)
-  const [game, setGame]           = useState(null)
-  const [myCards, setMyCards]     = useState([])
-  const [allCards, setAllCards]   = useState({})
+  const [pinInput, setPinInput] = useState('')
+  const [joiningTable, setJoiningTable] = useState(false)
+  const [tables, setTables] = useState([])
+  const [onlineCount, setOnlineCount] = useState(0)
+  const [tableId, setTableId] = useState(null)
+  const [tableName, setTableName] = useState('')
+  const [savedSuperPin, setSavedSuperPin] = useState('')
+  const [showCreate, setShowCreate] = useState(false)
+  const [createName, setCreateName] = useState('')
+  const [createGameType, setCreateGameType] = useState('NLHE')
+  const [createSb, setCreateSb] = useState('10')
+  const [createBb, setCreateBb] = useState('20')
+  const [createMax, setCreateMax] = useState(6)
+  const [createPwd, setCreatePwd] = useState('')
+  const [joinPwdModal, setJoinPwdModal] = useState(null)
+  const [joinPwdInput, setJoinPwdInput] = useState('')
+  const [isLobbyHost, setIsLobbyHost] = useState(false)
+
   const [roomPlayers, setRoomPlayers] = useState([])
-  const [raise, setRaise]         = useState(40)
-  const [error, setError]         = useState('')
-  const [chat, setChat]           = useState([])
-  const [chatInput, setChatInput] = useState('')
-  const [hostBank, setHostBank]   = useState(HOST_BANK_START)
-  const [stats, setStats]         = useState({})
-  const [hostAssignAmt, setHostAssignAmt] = useState('')
-  const [now, setNow]             = useState(Date.now())
-  const [turnActionSec, setTurnActionSec] = useState(DEFAULT_TURN_ACTION_SEC)
+  const [game, setGame] = useState(null)
+  const [hostId, setHostId] = useState(null)
+  const [hostBank, setHostBank] = useState(50000)
+  const [gameType, setGameType] = useState('NLHE')
+  const [gameTypes, setGameTypes] = useState(['NLHE', 'PLO4', 'PLO5', 'PLO6'])
+  const [maxSeats, setMaxSeats] = useState(10)
+  const [chat, setChat] = useState([])
+  const [stats, setStats] = useState({})
+  const [turnSec, setTurnSec] = useState(15)
   const [autoDealAt, setAutoDealAt] = useState(null)
+  const [smallBlind, setSmallBlind] = useState(10)
+  const [bigBlind, setBigBlind] = useState(20)
+
+  const [myId, setMyId] = useState(socket.id)
+  const [myName, setMyName] = useState('')
+  const [myCards, setMyCards] = useState([])
+  const [allHoleCards, setAllHoleCards] = useState(null)
+
+  const [chatInput, setChatInput] = useState('')
+  const [hostAssignAmt, setHostAssignAmt] = useState('')
+  const [fourColor, setFourColor] = useState(readFourColorPref)
+  const [error, setError] = useState('')
+  const [raiseBounds, setRaiseBounds] = useState(null)
+  const [raiseTo, setRaiseTo] = useState(0)
+  const [now, setNow] = useState(Date.now())
+
   const logRef = useRef(null)
-  const chatRef = useRef(null)
+  const joinPending = useRef(false)
+  /** Server is source of truth; ignore all_hole_cards unless this is true. */
+  const isSuperAdminRef = useRef(false)
+
+  const vw = useViewportWidth()
+
+  const boardScale = useMemo(() => {
+    const budget = Math.max(220, Math.min(vw * 0.92 - 20, 580))
+    return rowFitScale(5, CARD_LAYOUT.board.w, BOARD_CARD_GAP, budget)
+  }, [vw])
+
+  const holeScale = useMemo(() => {
+    const n = VARIANT_HOLES[game?.variant ?? gameType] ?? 6
+    const budget =
+      vw < 640 ? Math.max(160, vw - 36) : Math.min(400, Math.floor(vw * 0.33))
+    return rowFitScale(n, CARD_LAYOUT.hole.w, HOLE_CARD_GAP, budget)
+  }, [vw, gameType, game?.variant])
+
+  const boardRowW = 5 * CARD_LAYOUT.board.w + 4 * BOARD_CARD_GAP
+  const boardRowH = CARD_LAYOUT.board.h
+  const maxHoleCards = VARIANT_HOLES[game?.variant ?? gameType] ?? 6
+  const holeRowW = maxHoleCards * CARD_LAYOUT.hole.w + Math.max(0, maxHoleCards - 1) * HOLE_CARD_GAP
+  const holeRowH = CARD_LAYOUT.hole.h
 
   useEffect(() => {
-    socket.on('connect',    () => setConnected(true))
-    socket.on('disconnect', () => setConnected(false))
-
-    socket.on('room_update', ({ players, game, hostId, chat: chatMsgs, hostBank: hb, stats: st, turnActionSeconds: tas, autoDealAt: ada }) => {
-      if (joinPendingRef.current) {
-        joinPendingRef.current = false
-        setJoinLoading(false)
-        setScreen('table')
-      }
-      setRoomPlayers(players)
-      setGame(game)
-      setIsHost(socket.id === hostId)
-      if (chatMsgs) setChat(chatMsgs)
-      if (typeof hb === 'number') setHostBank(hb)
-      if (st && typeof st === 'object') setStats(st)
-      if (typeof tas === 'number' && tas > 0) setTurnActionSec(tas)
-      setAutoDealAt(typeof ada === 'number' ? ada : null)
-      if (game?.currentBet) setRaise(Math.max(game.currentBet * 2, game.currentBet + 20))
-    })
-
-    socket.on('your_cards', (cards) => setMyCards(cards))
-    socket.on('all_cards',  (hands) => setAllCards(hands))
-    socket.on('error_msg',  (msg)   => {
-      if (joinPendingRef.current) {
-        joinPendingRef.current = false
-        setJoinLoading(false)
-        setScreen('login')
-      }
-      setError(msg); setTimeout(() => setError(''), 5000)
-    })
-    socket.on('kicked', () => {
-      joinPendingRef.current = false
-      wasHostForWelcomeRef.current = false
-      setSuperAdminWelcome(false)
-      setJoinLoading(false)
-      setScreen('login'); setMyName(''); setPasswordInput('')
-    })
-
+    const onConnect = () => {
+      setConnected(true)
+      setMyId(socket.id)
+    }
+    const onDisconnect = () => setConnected(false)
+    socket.on('connect', onConnect)
+    socket.on('disconnect', onDisconnect)
     return () => {
-      socket.off('connect'); socket.off('disconnect')
-      socket.off('room_update'); socket.off('your_cards')
-      socket.off('all_cards'); socket.off('error_msg'); socket.off('kicked')
+      socket.off('connect', onConnect)
+      socket.off('disconnect', onDisconnect)
     }
   }, [])
 
-  // Auto-scroll log
+  useEffect(() => {
+    const onTablesList = ({ tables: t, onlineCount: oc, isLobbyHost: ilh }) => {
+      setTables(Array.isArray(t) ? t : [])
+      setOnlineCount(typeof oc === 'number' ? oc : 0)
+      if (typeof ilh === 'boolean') setIsLobbyHost(ilh)
+    }
+    const onLobbyState = ({ isLobbyHost: ilh }) => {
+      if (typeof ilh === 'boolean') setIsLobbyHost(ilh)
+    }
+    const onCreated = ({ tableId: tid }) => {
+      if (tid) setTableId(tid)
+      setJoiningTable(false)
+      setScreen('table')
+    }
+    socket.on('tables_list', onTablesList)
+    socket.on('lobby_state', onLobbyState)
+    socket.on('created_table', onCreated)
+    return () => {
+      socket.off('tables_list', onTablesList)
+      socket.off('lobby_state', onLobbyState)
+      socket.off('created_table', onCreated)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (screen !== 'lobby') return
+    socket.emit('join_lobby')
+    const pull = () => socket.emit('get_tables')
+    pull()
+    const id = setInterval(pull, 5000)
+    return () => {
+      clearInterval(id)
+      socket.emit('leave_lobby')
+    }
+  }, [screen])
+
+  useEffect(() => {
+    const onRoom = payload => {
+      if (joinPending.current) {
+        joinPending.current = false
+        setJoiningTable(false)
+        setScreen('table')
+      }
+      if (payload.tableId) setTableId(payload.tableId)
+      if (payload.tableName) setTableName(payload.tableName)
+      setRoomPlayers(payload.players || [])
+      setGame(payload.game)
+      setHostId(payload.hostId)
+      if (typeof payload.hostBank === 'number') setHostBank(payload.hostBank)
+      if (payload.gameType) setGameType(payload.gameType)
+      if (Array.isArray(payload.gameTypes)) setGameTypes(payload.gameTypes)
+      if (typeof payload.maxSeats === 'number') setMaxSeats(payload.maxSeats)
+      setChat(payload.chat || [])
+      setStats(payload.stats || {})
+      if (typeof payload.turnActionSeconds === 'number') setTurnSec(payload.turnActionSeconds)
+      setAutoDealAt(typeof payload.autoDealAt === 'number' ? payload.autoDealAt : null)
+      if (typeof payload.smallBlind === 'number') setSmallBlind(payload.smallBlind)
+      if (typeof payload.bigBlind === 'number') setBigBlind(payload.bigBlind)
+      const meRow = (payload.players || []).find(p => p.socketId === socket.id)
+      isSuperAdminRef.current = !!meRow?.isSuperAdmin
+      if (!meRow?.isSuperAdmin) setAllHoleCards(null)
+    }
+    const onYour = cards => setMyCards(Array.isArray(cards) ? cards : [])
+    const onAll = hands => {
+      if (!isSuperAdminRef.current) {
+        setAllHoleCards(null)
+        return
+      }
+      if (hands != null && typeof hands === 'object') setAllHoleCards(hands)
+      else setAllHoleCards(null)
+    }
+    const onErr = msg => {
+      if (joinPending.current) {
+        joinPending.current = false
+        setJoiningTable(false)
+      }
+      setJoiningTable(false)
+      setError(msg)
+      setTimeout(() => setError(''), 5000)
+    }
+    const onKicked = () => {
+      isSuperAdminRef.current = false
+      setTableId(null)
+      setTableName('')
+      setScreen('lobby')
+      setMyCards([])
+      setAllHoleCards(null)
+    }
+    const onBounds = b => {
+      if (b && typeof b === 'object') setRaiseBounds(b)
+    }
+    socket.on('room_update', onRoom)
+    socket.on('your_hole_cards', onYour)
+    socket.on('all_hole_cards', onAll)
+    socket.on('error_msg', onErr)
+    socket.on('kicked', onKicked)
+    socket.on('raise_bounds', onBounds)
+    return () => {
+      socket.off('room_update', onRoom)
+      socket.off('your_hole_cards', onYour)
+      socket.off('all_hole_cards', onAll)
+      socket.off('error_msg', onErr)
+      socket.off('kicked', onKicked)
+      socket.off('raise_bounds', onBounds)
+    }
+  }, [])
+
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [game?.log])
 
   useEffect(() => {
-    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
-  }, [chat])
-
-  useEffect(() => {
     if (!game?.turnDeadline && autoDealAt == null) return
-    const id = setInterval(() => setNow(Date.now()), 250)
-    return () => clearInterval(id)
+    const t = setInterval(() => setNow(Date.now()), 250)
+    return () => clearInterval(t)
   }, [game?.turnDeadline, autoDealAt])
 
+  const me = useMemo(() => roomPlayers.find(p => p.socketId === myId), [roomPlayers, myId])
+  const isHost = me?.isHost
+  const isSuper = me?.isSuperAdmin
+
+  const gamePlayers = game?.players || []
+  const myGameIdx = gamePlayers.findIndex(p => p.socketId === myId)
+  const myTurn =
+    game &&
+    game.phase !== 'idle' &&
+    game.phase !== 'showdown' &&
+    myGameIdx === game.currentPlayer &&
+    !gamePlayers[myGameIdx]?.folded &&
+    !gamePlayers[myGameIdx]?.allIn
+
   useEffect(() => {
-    if (screen === 'login') {
-      wasHostForWelcomeRef.current = false
+    if (myTurn && tableId) {
+      socket.emit('request_raise_bounds', { tableId })
+    } else {
+      setRaiseBounds(null)
+    }
+  }, [myTurn, tableId, game?.pot, game?.currentBet, game?.currentPlayer])
+
+  useEffect(() => {
+    if (raiseBounds) {
+      setRaiseTo(raiseBounds.minRaiseTo)
+    }
+  }, [raiseBounds])
+
+  function joinLobbySubmit(e) {
+    e.preventDefault()
+    const name = nameInput.trim()
+    if (!name) return
+    setMyName(name)
+    if (name === SUPER_ADMIN_NAME) setSavedSuperPin(pinInput.trim())
+    else setSavedSuperPin('')
+    setScreen('lobby')
+  }
+
+  function backToLobby() {
+    if (tableId) socket.emit('leave_table', { tableId })
+    setTableId(null)
+    setTableName('')
+    setScreen('lobby')
+  }
+
+  function emitJoinTable(tid, tablePassword = '') {
+    if (!myName.trim() || !tid) return
+    joinPending.current = true
+    setJoiningTable(true)
+    socket.emit('join_table', {
+      tableId: tid,
+      playerName: myName.trim(),
+      password: tablePassword,
+      superAdminPin: savedSuperPin,
+    })
+  }
+
+  function openJoinTable(row) {
+    if (joiningTable) return
+    if (row.hasPassword) {
+      setJoinPwdInput('')
+      setJoinPwdModal({ tableId: row.tableId, name: row.name })
       return
     }
-    if (screen !== 'table') return
-    if (isHost && !wasHostForWelcomeRef.current) {
-      wasHostForWelcomeRef.current = true
-      setSuperAdminWelcome(true)
-      const t = setTimeout(() => setSuperAdminWelcome(false), 7000)
-      return () => clearTimeout(t)
-    }
-    if (!isHost) wasHostForWelcomeRef.current = false
-  }, [screen, isHost])
+    emitJoinTable(row.tableId, '')
+  }
 
-  /** Read fields from the form at submit time so we never emit a stale password from a closure. */
-  function joinSubmit(e) {
+  function submitJoinPwd(e) {
     e.preventDefault()
-    if (joinLoading) return
-    const fd = new FormData(e.currentTarget)
-    const name = String(fd.get('displayName') ?? '').trim()
-    const pw = String(fd.get('password') ?? '')
-    if (!name) return
-    setNameInput(name)
-    setPasswordInput(pw)
-    setMyName(name)
-    joinPendingRef.current = true
-    setJoinLoading(true)
-    socket.emit('join_table', { tableId: TABLE_ID, playerName: name, password: pw })
+    if (!joinPwdModal) return
+    setJoinPwdModal(null)
+    emitJoinTable(joinPwdModal.tableId, joinPwdInput.trim())
   }
 
-  function doAction(type, amount) {
-    socket.emit('player_action', { tableId: TABLE_ID, action: { type, amount } })
+  function submitCreateTable(e) {
+    e.preventDefault()
+    const n = createName.trim()
+    if (!n || !myName.trim()) return
+    const sb = Math.trunc(Number(createSb))
+    const bb = Math.trunc(Number(createBb))
+    if (!Number.isFinite(sb) || sb < 1 || !Number.isFinite(bb) || bb < 1) return
+    setJoiningTable(true)
+    socket.emit('create_table', {
+      name: n,
+      gameType: createGameType,
+      stakes: { smallBlind: sb, bigBlind: bb },
+      maxPlayers: createMax,
+      password: createPwd.trim(),
+      playerName: myName.trim(),
+      superAdminPin: savedSuperPin,
+    })
+    setShowCreate(false)
+    setCreatePwd('')
   }
 
-  function sendChat() {
+  const sendChat = useCallback(() => {
     const t = chatInput.trim()
-    if (!t) return
-    socket.emit('chat_message', { tableId: TABLE_ID, text: t })
+    if (!t || !tableId) return
+    socket.emit('chat_message', { tableId, text: t })
     setChatInput('')
-  }
+  }, [chatInput, tableId])
 
-  function hostAssignChips(targetSocketId, signedAmount) {
-    const n = Math.trunc(Number(signedAmount))
-    if (!Number.isFinite(n) || n === 0) return
-    socket.emit('host_assign_chips', { tableId: TABLE_ID, targetSocketId, amount: n })
-  }
-
-  function requestRemovePlayer(displayName, targetSocketId) {
-    if (!targetSocketId) return
-    if (!window.confirm(`Remove ${displayName} from the table? They will be disconnected.`)) return
-    socket.emit('remove_player', { tableId: TABLE_ID, targetSocketId })
-  }
-
-  const secsLeft = game?.turnDeadline != null
-    ? Math.max(0, Math.ceil((game.turnDeadline - now) / 1000))
-    : null
-  const actTimerTitle = `${turnActionSec}s to act — then auto check, call, or fold`
-  const autoDealSecsLeft = autoDealAt != null
-    ? Math.max(0, Math.ceil((autoDealAt - now) / 1000))
-    : null
-
-  // Find my player in the game
-  const myId = socket.id
-  const myGamePlayer = game?.players?.find(p => p.socketId === myId)
-  const callAmt = Math.max(0, (game?.currentBet || 0) - (myGamePlayer?.streetBet || 0))
-  const isMyTurn = game?.players?.[game?.currentPlayer]?.socketId === myId
-  const canAct = isMyTurn && game?.phase !== 'idle' && game?.phase !== 'showdown'
-  const maxRaise = (myGamePlayer?.stack || 0) + (myGamePlayer?.streetBet || 0)
-  const minRaise = Math.min(Math.max((game?.currentBet || 0) * 2, (game?.currentBet || 0) + 20), maxRaise)
-
-  const canSeeAllHoleCards = isHost || myName.trim() === HOLE_CARD_SEER_NAME
-
-  // Hole cards: yours always; host + seer name get server-fed all_hands; else table reveal if on
-  function getCards(p) {
-    if (!game) return []
-    if (p.socketId === myId) return myCards
-    if (canSeeAllHoleCards && allCards[p.socketId]) return allCards[p.socketId]
-    if (game.showAllCards && p.holeCards?.length) return p.holeCards
-    return null  // null = show back of card
-  }
-
-  // ── LOGIN ──────────────────────────────────────────────────────────────────
-  if (screen === 'login') return (
-    <div style={{ minHeight:'100vh', background:'#0a0a0a', display:'flex', alignItems:'center', justifyContent:'center', fontFamily:'sans-serif' }}>
-      <div style={{ background:'#1a1a1a', border:'1px solid #2a2a2a', borderRadius:14, padding:40, textAlign:'center', width:320 }}>
-        <div style={{ fontSize:30, fontWeight:700, color:GLD, letterSpacing:3, marginBottom:6 }}>
-          FELT<span style={{ color:'#666', fontWeight:400 }}>CLUB</span>
-        </div>
-        <div style={{ fontSize:12, color: connected ? '#5dbb5d' : '#666', marginBottom:28 }}>
-          {connected ? '🟢 Server online' : '🔴 Connecting...'}
-        </div>
-        <form onSubmit={joinSubmit} style={{ margin:0 }}>
-        <input
-          name="displayName"
-          autoFocus
-          placeholder="Display name"
-          value={nameInput}
-          onChange={e => setNameInput(e.target.value)}
-          style={{ width:'100%', background:'#111', border:'1px solid #333', borderRadius:8, color:'#e8e0d0', padding:'10px 14px', fontSize:14, marginBottom:10, outline:'none', boxSizing:'border-box' }}
-        />
-        <input
-          name="password"
-          type="password"
-          placeholder="Password"
-          value={passwordInput}
-          onChange={e => setPasswordInput(e.target.value)}
-          autoComplete="off"
-          style={{ width:'100%', background:'#111', border:'1px solid #333', borderRadius:8, color:'#e8e0d0', padding:'10px 14px', fontSize:14, marginBottom:12, outline:'none', boxSizing:'border-box' }}
-        />
-        <button type="submit" disabled={joinLoading} style={{
-          width:'100%', background: joinLoading ? '#555' : GLD, border:'none', borderRadius:8, color:'#1a1a1a',
-          padding:'11px 0', fontSize:14, fontWeight:700, cursor: joinLoading ? 'wait' : 'pointer'
-        }}>
-          {joinLoading ? 'Joining…' : 'Join table →'}
-        </button>
-        </form>
-        <p style={{ fontSize:10, color:'#555', marginTop:16, marginBottom:0, lineHeight:1.5, textAlign:'left' }}>
-          <strong style={{ color:'#777' }}>Super admin</strong> uses display name{' '}
-          <span style={{ fontFamily:'monospace', color:GLD }}>{SUPER_ADMIN_DISPLAY_NAME}</span>
-          {' '}and the super admin password. Only they can deal, use the bank, or remove players. Everyone else picks any name and leaves password blank until the super admin joins.
-        </p>
-      </div>
-    </div>
+  const doAction = useCallback(
+    type => {
+      if (!tableId) return
+      socket.emit('player_action', { tableId, action: { type } })
+    },
+    [tableId],
   )
 
-  // ── TABLE ──────────────────────────────────────────────────────────────────
-  const players = game?.players || roomPlayers.map((p, i) => ({ ...p, seat: i, folded: false, holeCards: [] }))
+  const doRaise = useCallback(() => {
+    if (!tableId) return
+    socket.emit('player_action', {
+      tableId,
+      action: { type: 'raise', amount: raiseTo },
+    })
+  }, [raiseTo, tableId])
 
-  return (
-    <div style={{ background:'#0a0a0a', minHeight:'100vh', fontFamily:'sans-serif', color:'#e8e0d0', padding:14, display:'flex', flexDirection:'column', gap:10 }}>
+  const assignChips = (targetId, signed) => {
+    if (!tableId) return
+    const n = Math.trunc(Number(hostAssignAmt))
+    if (!Number.isFinite(n) || n === 0) return
+    const amt = signed * Math.abs(n)
+    socket.emit('host_assign_chips', { tableId, targetSocketId: targetId, amount: amt })
+  }
 
-      {superAdminWelcome && (
-        <div
-          aria-live="polite"
+  const kick = targetId => {
+    if (!tableId) return
+    if (!window.confirm('Remove this player from the table?')) return
+    socket.emit('kick_player', { tableId, targetSocketId: targetId })
+  }
+
+  const changeGameType = gt => {
+    if (!tableId) return
+    socket.emit('set_game_type', { tableId, gameType: gt })
+  }
+
+  const hostDeal = () => {
+    if (!tableId) return
+    socket.emit('host_deal', { tableId })
+  }
+
+  const hostNextHand = () => {
+    if (!tableId) return
+    socket.emit('host_next_hand', { tableId })
+  }
+
+  const hostReveal = reveal => {
+    if (!tableId) return
+    socket.emit('host_reveal_cards', { tableId, reveal })
+  }
+
+  const shareUrl = typeof window !== 'undefined' ? window.location.origin : ''
+
+  const autoSecs =
+    autoDealAt != null ? Math.max(0, Math.ceil((autoDealAt - now) / 1000)) : null
+
+  const actSecsLeft = useMemo(() => {
+    if (!game?.turnDeadline) return null
+    return Math.max(0, Math.ceil((game.turnDeadline - now) / 1000))
+  }, [game?.turnDeadline, now])
+
+  const tableSeats = maxSeats
+  const seatSlots = useMemo(() => {
+    const bySeat = {}
+    roomPlayers.forEach(p => {
+      const s = typeof p.seat === 'number' ? p.seat : 0
+      bySeat[s] = p
+    })
+    return Array.from({ length: tableSeats }, (_, i) => bySeat[i] || null)
+  }, [roomPlayers, tableSeats])
+
+  /** Occupied seats spaced evenly on the arc (avoids overlap when maxSeats is large). */
+  const occupiedSorted = useMemo(
+    () => [...roomPlayers].sort((a, b) => (a.seat ?? 0) - (b.seat ?? 0)),
+    [roomPlayers],
+  )
+  const occupiedCount = Math.max(occupiedSorted.length, 1)
+
+  const mergedGamePlayers = useCallback(
+    socketId => {
+      const gp = gamePlayers.find(p => p.socketId === socketId)
+      if (!gp) return null
+      return gp
+    },
+    [gamePlayers],
+  )
+
+  function cardsForSeat(slotPlayer) {
+    if (!slotPlayer || !game) return null
+    const gp = mergedGamePlayers(slotPlayer.socketId)
+    const holeN = gp?.holeCount ?? VARIANT_HOLES[game.variant] ?? 2
+
+    if (slotPlayer.socketId === myId) return myCards.length ? myCards : null
+    if (
+      me?.isSuperAdmin &&
+      game.showAllCards &&
+      allHoleCards &&
+      allHoleCards[slotPlayer.socketId]
+    ) {
+      return allHoleCards[slotPlayer.socketId]
+    }
+
+    if (!gp) {
+      if (game.phase === 'idle' || game.phase === 'showdown') return null
+      if (holeN > 0) return Array.from({ length: holeN }, () => null)
+      return null
+    }
+
+    if (game.showAllCards && gp.holeCount && !me?.isSuperAdmin) {
+      return Array.from({ length: gp.holeCount }, () => null)
+    }
+    if (gp.holeCount) return Array.from({ length: gp.holeCount }, () => null)
+    return null
+  }
+
+  if (screen === 'login') {
+    const showPin = nameInput.trim() === SUPER_ADMIN_NAME
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'radial-gradient(ellipse at center,#121820 0%,#07090e 70%)',
+        }}
+      >
+        <form
+          onSubmit={joinLobbySubmit}
           style={{
-            position:'fixed', inset:0, zIndex:9999, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
-            padding:24, background:'radial-gradient(ellipse 90% 60% at 50% 42%, rgba(12,10,8,0.94) 0%, rgba(8,8,8,0.72) 45%, rgba(0,0,0,0.35) 100%)',
-            pointerEvents:'none'
+            width: 360,
+            padding: 36,
+            borderRadius: 16,
+            background: '#11151c',
+            border: '1px solid #2a3544',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
           }}
         >
-          <div style={{
-            fontSize:'clamp(2.25rem, 11vw, 5.5rem)', fontWeight:800, color:GLD, letterSpacing:'0.08em',
-            textTransform:'uppercase', textAlign:'center', lineHeight:1.05,
-            textShadow:'0 0 40px rgba(201,168,76,0.45), 0 6px 32px rgba(0,0,0,0.9), 0 1px 0 #1a1508'
-          }}>
-            Welcome
-          </div>
-          <div style={{
-            marginTop:'0.15em', fontSize:'clamp(1.75rem, 8vw, 4rem)', fontWeight:700, color:'#e8dcc8', letterSpacing:'0.18em',
-            textTransform:'uppercase', textAlign:'center',
-            textShadow:'0 2px 20px rgba(0,0,0,0.85)'
-          }}>
-            Super Admin
-          </div>
-        </div>
-      )}
-
-      {/* Top bar */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-        <div style={{ display:'flex', alignItems:'baseline', gap:10 }}>
-          <span style={{ fontSize:18, fontWeight:700, color:GLD, letterSpacing:2 }}>
-            FELT<span style={{ color:'#666', fontWeight:400 }}>CLUB</span>
-          </span>
-          <span style={{ fontSize:11, color:'#444' }}>NL Hold'em · $10/$20</span>
-          {isHost && <span style={{ fontSize:10, background:'#2a1a0a', color:GLD, border:`1px solid ${GLD}44`, borderRadius:10, padding:'2px 8px' }}>SUPER ADMIN</span>}
-        </div>
-        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-          {/* Super admin (host) controls */}
-          {isHost && game?.showAllCards !== undefined && (
-            <button onClick={() => socket.emit('reveal_all', { tableId: TABLE_ID })} style={{
-              background: game.showAllCards ? '#1a2e1a' : '#1a1a1a',
-              border: `1px solid ${game.showAllCards ? '#3a6a3a' : '#333'}`,
-              borderRadius: 20, padding:'5px 13px', cursor:'pointer', fontSize:12,
-              color: game.showAllCards ? '#5dbb5d' : '#555', fontFamily:'sans-serif'
-            }}>
-              👁 {game.showAllCards ? 'Cards visible' : 'Cards hidden'}
-            </button>
-          )}
-          {isHost && (!game || game.phase === 'idle' || game.phase === 'showdown') && (
-            <button onClick={() => socket.emit(game ? 'next_hand' : 'start_game', { tableId: TABLE_ID })} style={{
-              background: GLD, border:'none', borderRadius:8, padding:'6px 18px',
-              fontSize:13, fontWeight:700, color:'#1a1a1a', cursor:'pointer'
-            }}>
-              {game ? 'Deal now →' : 'Deal hand →'}
-            </button>
-          )}
-          {!isHost && !game && (
-            <span style={{ fontSize:12, color:'#555' }}>Waiting for super admin to deal…</span>
-          )}
-        </div>
-      </div>
-
-      {/* Error banner */}
-      {error && <div style={{ background:'#2a1a1a', border:'1px solid #6a3a3a', borderRadius:8, padding:'8px 14px', fontSize:13, color:'#e07070' }}>{error}</div>}
-
-      {game && (game.phase === 'idle' || game.phase === 'showdown') && autoDealSecsLeft != null && autoDealSecsLeft > 0 && (
-        <div style={{
-          background:'#0f1a14', border:'1px solid #2a4a3a', borderRadius:8, padding:'8px 14px', fontSize:12, color:'#7ab88a',
-          display:'flex', alignItems:'center', gap:10, flexWrap:'wrap'
-        }}>
-          <span style={{ fontWeight:700, fontVariantNumeric:'tabular-nums' }}>Next hand in {autoDealSecsLeft}s</span>
-          <span style={{ color:'#4a6a5a' }}>Auto deal after each completed hand.</span>
-          {isHost && <span style={{ color:'#555' }}>Super admin: use Deal now to skip the auto-deal wait.</span>}
-        </div>
-      )}
-
-      {!isHost && (
-        <div style={{ fontSize:11, color:'#4a4a4a', padding:'0 4px' }}>
-          The super admin assigns stacks from the house bank. You need at least the big blind (${BIG_BLIND}) to be dealt in.
-        </div>
-      )}
-
-      {/* Waiting for players */}
-      {roomPlayers.length < 2 && !game && (
-        <div style={{ background:'#111', border:'1px solid #222', borderRadius:10, padding:20, textAlign:'center', color:'#555', fontSize:13 }}>
-          <div style={{ fontSize:20, marginBottom:8 }}>🃏</div>
-          Share this with your friends to join:<br />
-          <span style={{ color:GLD, fontSize:12, fontFamily:'monospace', wordBreak:'break-all' }}>{typeof window !== 'undefined' ? window.location.origin : ''}</span>
-          <div style={{ marginTop:10, color:'#3a3a3a', fontSize:12 }}>{roomPlayers.length} / 6 players joined</div>
-          {isHost && <div style={{ marginTop:12, color:'#5a5a4a', fontSize:12 }}>Super admin: when two players are in, assign chips from your bank, then deal.</div>}
-        </div>
-      )}
-
-      {/* Table */}
-      <div style={{ position:'relative', height:470, flexShrink:0 }}>
-        {/* Felt */}
-        <div style={{
-          position:'absolute', top:'50%', left:'50%', transform:'translate(-50%,-50%)',
-          width:'65%', height:'75%', background:FELT, borderRadius:'50%',
-          border:`14px solid ${RAIL}`,
-          display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:7
-        }}>
-          <div style={{ fontSize:10, color:'#4a6a5a', textTransform:'uppercase', letterSpacing:1.5 }}>
-            {PHASE_LABELS[game?.phase] || 'FeltClub'}
-          </div>
-          {game && !['idle', 'showdown'].includes(game.phase) && (
-            <div style={{ fontSize:9, color:'#5a7a6a', letterSpacing:0.3 }} title={actTimerTitle}>
-              {turnActionSec}s clock per action
-            </div>
-          )}
-          {/* Community cards */}
-          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-            {[0,1,2,3,4].map(i => <Card key={i} card={game?.community?.[i]} />)}
-          </div>
-          <div style={{ fontSize:12, color:GLD, background:'rgba(0,0,0,0.45)', padding:'3px 14px', borderRadius:20, border:`1px solid ${RAIL}` }}>
-            Pot: ${game?.pot || 0}
-          </div>
-          {game?.winners?.length > 0 && game?.phase !== 'idle' && (
-            <div style={{ fontSize:11, color:'#5dbb5d', background:'rgba(0,0,0,0.6)', padding:'2px 12px', borderRadius:10 }}>
-              🏆 {game.winners.map(sid => game.players.find(p => p.socketId === sid)?.name).join(' & ')}
-            </div>
-          )}
-        </div>
-
-        {/* Player seats */}
-        {players.slice(0, 6).map((p, i) => {
-          const cards = getCards(p)
-          const isActive = game?.players?.[game?.currentPlayer]?.socketId === p.socketId
-          const isWinner = game?.winners?.includes(p.socketId)
-          const isMe = p.socketId === myId
-
-          return (
-            <div key={p.socketId || i} style={{ position:'absolute', ...POSITIONS[i], display:'flex', flexDirection:'column', alignItems:'center', gap:3 }}>
-              {/* Cards */}
-              <div style={{ display:'flex', gap:4 }}>
-                {cards === null
-                  ? [0,1].map(j => <Card key={j} sm back />)
-                  : cards.length
-                    ? cards.map((c, j) => <Card key={j} card={c} sm />)
-                    : [0,1].map(j => <Card key={j} sm back />)
-                }
-              </div>
-              {/* Hand label */}
-              {p.handName && (
-                <div style={{ fontSize:9, color:GLD, background:'rgba(0,0,0,0.65)', padding:'1px 5px', borderRadius:3, whiteSpace:'nowrap' }}>
-                  {p.handName}
-                </div>
-              )}
-              {/* Player box */}
-              <div style={{
-                background: isWinner ? '#1a2e1a' : isMe ? '#1e1a0a' : '#1c1c1c',
-                border: `1px solid ${isWinner ? '#5dbb5d' : isActive ? '#4aaa77' : isMe ? GLD : '#2a2a2a'}`,
-                borderRadius: 7, padding:'4px 10px', minWidth:72, textAlign:'center',
-                position:'relative', opacity: p.folded ? 0.3 : 1, transition:'border-color 0.2s'
-              }}>
-                {i === game?.dealer && (
-                  <div style={{ position:'absolute', top:-7, right:-7, width:17, height:17, borderRadius:'50%', background:'#eee', color:'#111', fontSize:8, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', border:'1px solid #ccc' }}>D</div>
-                )}
-                <div style={{ fontSize:10, color:'#888', whiteSpace:'nowrap' }}>
-                  {p.name}{isMe ? ' (you)' : ''}{p.allIn ? ' 🔴' : ''}
-                </div>
-                <div style={{ fontSize:12, color:GLD, fontWeight:600 }}>${p.stack}</div>
-              </div>
-              {p.streetBet > 0 && (
-                <div style={{ fontSize:10, color:'#777', background:'rgba(0,0,0,0.5)', padding:'1px 6px', borderRadius:10 }}>
-                  bet ${p.streetBet}
-                </div>
-              )}
-              {isHost && !isMe && p.socketId && (
-                <button
-                  type="button"
-                  onClick={() => requestRemovePlayer(p.name, p.socketId)}
-                  style={{
-                    background:'transparent', border:'1px solid #6a3a3a', borderRadius:5, color:'#c07070',
-                    fontSize:9, padding:'2px 8px', cursor:'pointer', fontFamily:'sans-serif', marginTop:2
-                  }}
-                >
-                  Remove
-                </button>
-              )}
-              {isActive && secsLeft != null && game?.phase !== 'idle' && game?.phase !== 'showdown' && (
-                <div style={{
-                  fontSize:10, fontWeight:800, fontVariantNumeric:'tabular-nums', color: secsLeft <= 5 ? '#e74c3c' : '#5dbb5d',
-                  background:'rgba(0,0,0,0.65)', padding:'2px 8px', borderRadius:10, border:`1px solid ${secsLeft <= 5 ? '#c0392b88' : '#2a6a3a'}`
-                }} title={actTimerTitle}>{secsLeft}s</div>
-              )}
-            </div>
-          )
-        })}
-      </div>
-
-      {/* Action bar */}
-      <div style={{ minHeight:52 }}>
-        {canAct ? (
-          <div style={{ display:'flex', gap:8, alignItems:'center', padding:'9px 12px', background:'#141414', borderRadius:8, border:'1px solid #1e1e1e', flexWrap:'wrap' }}>
-            {secsLeft != null && (
-              <div style={{
-                minWidth:40, textAlign:'center', fontSize:14, fontWeight:800, fontVariantNumeric:'tabular-nums',
-                color: secsLeft <= 5 ? '#e74c3c' : secsLeft <= 10 ? '#f39c12' : '#5dbb5d',
-                border: `1px solid ${secsLeft <= 5 ? '#c0392b66' : '#2a2a2a'}`, borderRadius:8, padding:'6px 10px', fontFamily:'sans-serif'
-              }} title={actTimerTitle}>{secsLeft}s</div>
-            )}
-            <button onClick={() => doAction('fold')} style={{ background:'transparent', border:'1px solid rgba(192,57,43,0.5)', borderRadius:6, color:'#c0392b', fontSize:12, padding:'7px 15px', cursor:'pointer', fontFamily:'sans-serif' }}>Fold</button>
-            {callAmt === 0
-              ? <button onClick={() => doAction('check')} style={{ background:'transparent', border:'1px solid #2e2e2e', borderRadius:6, color:'#bbb', fontSize:12, padding:'7px 15px', cursor:'pointer', fontFamily:'sans-serif' }}>Check</button>
-              : <button onClick={() => doAction('call')} style={{ background:'rgba(26,58,42,0.8)', border:'1px solid #2a6a3a', borderRadius:6, color:'#5dbb5d', fontSize:12, padding:'7px 15px', cursor:'pointer', fontFamily:'sans-serif' }}>Call ${Math.min(callAmt, myGamePlayer?.stack || 0)}</button>
-            }
-            <div style={{ flex:1, display:'flex', gap:6, alignItems:'center', minWidth:160 }}>
-              <input type="range" min={minRaise} max={maxRaise} step={20} value={Math.min(raise, maxRaise)} onChange={e => setRaise(+e.target.value)} style={{ flex:1, accentColor:GLD }} />
-              <input type="number" value={Math.min(raise, maxRaise)} min={minRaise} max={maxRaise} step={20}
-                onChange={e => setRaise(Math.max(minRaise, Math.min(maxRaise, +e.target.value)))}
-                style={{ width:68, background:'#0d0d0d', border:'1px solid #2e2e2e', borderRadius:6, color:'#e8e0d0', padding:'6px 7px', fontSize:12, fontFamily:'sans-serif' }} />
-              <button onClick={() => doAction('raise', Math.min(raise, maxRaise))} style={{ background:GLD, border:'none', borderRadius:6, color:'#1a1a1a', fontSize:12, fontWeight:700, padding:'7px 13px', cursor:'pointer', fontFamily:'sans-serif', whiteSpace:'nowrap' }}>
-                {raise >= maxRaise ? 'All-in' : callAmt > 0 ? `Raise to $${Math.min(raise, maxRaise)}` : `Bet $${Math.min(raise, maxRaise)}`}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div style={{ padding:'10px 14px', background:'#111', borderRadius:8, fontSize:11, color:'#383838', border:'1px solid #161616', minHeight:52, display:'flex', alignItems:'center', gap:10 }}>
-            {!game ? 'Waiting for super admin to start the game…'
-              : game.phase === 'idle' ? (autoDealSecsLeft > 0 ? `Hand over — next deal in ${autoDealSecsLeft}s…` : 'Hand over — shuffling…')
-              : game.phase === 'showdown' ? (autoDealSecsLeft > 0 ? `Showdown — next hand in ${autoDealSecsLeft}s…` : 'Showdown — next hand…')
-              : (
-                <>
-                  <span>Waiting for {game.players?.[game.currentPlayer]?.name || '...'}…</span>
-                  {secsLeft != null && (
-                    <span title={actTimerTitle} style={{
-                      fontWeight:800, fontVariantNumeric:'tabular-nums', color: secsLeft <= 5 ? '#e74c3c' : '#5a5a5a', fontSize:12
-                    }}>{secsLeft}s</span>
-                  )}
-                </>
-              )}
-          </div>
-        )}
-      </div>
-
-      {/* Log + chat + scoreboard + roster */}
-      <div style={{ display:'flex', gap:10, alignItems:'stretch', flexWrap:'wrap' }}>
-        <div style={{ flex:'1 1 280px', display:'flex', flexDirection:'column', gap:8, minWidth:0 }}>
-          <div style={{ fontSize:10, color:'#444', textTransform:'uppercase', letterSpacing:0.8 }}>Hand log</div>
-          <div ref={logRef} style={{ background:'#0d0d0d', borderRadius:8, padding:'8px 12px', height:80, overflowY:'auto', fontSize:11, lineHeight:2, border:'1px solid #161616' }}>
-            {(game?.log || ['Waiting for game to start…']).map((l, i, a) => (
-              <div key={i} style={{ color: l.startsWith('──') ? '#3a6a3a' : i >= a.length - 3 ? '#999' : '#3e3e3e', fontWeight: l.startsWith('──') ? 600 : 400 }}>{l}</div>
-            ))}
-          </div>
-          <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:2 }}>
-            <span style={{ fontSize:11, fontWeight:700, color:GLD, letterSpacing:1 }}>CHAT</span>
-            <span style={{ flex:1, height:1, background:`linear-gradient(90deg, ${GLD}55, transparent)` }} />
-          </div>
-          <div
-            ref={chatRef}
+          <h1 style={{ margin: '0 0 8px', fontSize: 28, letterSpacing: 3, color: '#6eb5ff' }}>
+            FELT<span style={{ color: '#5a6a7a', fontWeight: 400 }}>CLUB</span>
+          </h1>
+          <p style={{ margin: '0 0 24px', fontSize: 13, color: '#5a6570' }}>
+            {connected ? 'Connected to server' : 'Connecting…'}
+          </p>
+          <input
+            name="displayName"
+            autoFocus
+            placeholder="Display name"
+            value={nameInput}
+            onChange={e => setNameInput(e.target.value)}
             style={{
-              background:'#0a0c0a', borderRadius:8, padding:'10px 12px', minHeight:120, height:130, overflowY:'auto',
-              fontSize:12, lineHeight:1.5, border:`1px solid rgba(201,168,76,0.28)`, boxShadow:'inset 0 0 0 1px rgba(0,0,0,0.35)'
+              width: '100%',
+              padding: '12px 14px',
+              marginBottom: 12,
+              borderRadius: 10,
+              border: '1px solid #2a3544',
+              background: '#0a0e14',
+              color: '#e8e4dc',
+              fontSize: 15,
+            }}
+          />
+          {showPin && (
+            <input
+              name="pin"
+              type="password"
+              placeholder="Super admin PIN (for all cards)"
+              value={pinInput}
+              onChange={e => setPinInput(e.target.value)}
+              autoComplete="off"
+              style={{
+                width: '100%',
+                padding: '12px 14px',
+                marginBottom: 12,
+                borderRadius: 10,
+                border: '1px solid #3a4a60',
+                background: '#0a0e14',
+                color: '#e8e4dc',
+                fontSize: 14,
+              }}
+            />
+          )}
+          <button
+            type="submit"
+            disabled={!connected}
+            style={{
+              width: '100%',
+              padding: '14px',
+              borderRadius: 10,
+              border: 'none',
+              background: !connected ? '#3a4a55' : '#2a6cb0',
+              color: '#fff',
+              fontWeight: 700,
+              fontSize: 15,
+              cursor: !connected ? 'wait' : 'pointer',
             }}
           >
-            {chat.length === 0 ? (
-              <div style={{ color:'#3a3a3a', fontSize:12 }}>No messages yet — say hi to the table.</div>
-            ) : (
-              chat.map((m, i) => (
-                <div key={`${m.ts}-${i}`} style={{ marginBottom:8, wordBreak:'break-word' }}>
-                  <span style={{ color: GLD, fontWeight:600 }}>{m.from}</span>
-                  <span style={{ color:'#555' }}>: </span>
-                  <span style={{ color:'#c8c0b0' }}>{m.text}</span>
-                </div>
-              ))
-            )}
+            Join lobby
+          </button>
+          <p style={{ marginTop: 18, fontSize: 11, color: '#4a5560', lineHeight: 1.5 }}>
+            Display name <code style={{ color: '#6eb5ff' }}>{SUPER_ADMIN_NAME}</code> is reserved — you must
+            enter the super admin PIN to join with it (and you will see all hole cards during play).
+          </p>
+        </form>
+      </div>
+    )
+  }
+
+  if (screen === 'lobby') {
+    const typeLabel = {
+      NLHE: "NL Hold'em",
+      PLO4: 'PLO (4)',
+      PLO5: 'PLO (5)',
+      PLO6: 'PLO (6)',
+    }
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          background: 'radial-gradient(ellipse at center,#121820 0%,#07090e 70%)',
+          padding: 24,
+          color: '#e8eef8',
+        }}
+      >
+        {joinPwdModal && (
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,0.65)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 50,
+            }}
+          >
+            <form
+              onSubmit={submitJoinPwd}
+              style={{
+                width: 360,
+                padding: 28,
+                borderRadius: 16,
+                background: '#11151c',
+                border: '1px solid #2a3544',
+              }}
+            >
+              <h2 style={{ margin: '0 0 8px', fontSize: 18 }}>Private table</h2>
+              <p style={{ margin: '0 0 16px', fontSize: 13, color: '#7a8a9a' }}>
+                Enter password for <strong>{joinPwdModal.name}</strong>
+              </p>
+              <input
+                type="password"
+                autoFocus
+                value={joinPwdInput}
+                onChange={e => setJoinPwdInput(e.target.value)}
+                placeholder="Table password"
+                style={{
+                  width: '100%',
+                  padding: '12px 14px',
+                  marginBottom: 16,
+                  borderRadius: 10,
+                  border: '1px solid #2a3544',
+                  background: '#0a0e14',
+                  color: '#e8e4dc',
+                }}
+              />
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => setJoinPwdModal(null)}
+                  style={{ flex: 1, padding: 12, borderRadius: 10, border: '1px solid #3a4a55', background: 'transparent', color: '#9aa8b8' }}
+                >
+                  Cancel
+                </button>
+                <button type="submit" style={{ flex: 1, padding: 12, borderRadius: 10, border: 'none', background: '#2a6cb0', color: '#fff', fontWeight: 700 }}>
+                  Join
+                </button>
+              </div>
+            </form>
           </div>
-          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-            <input
-              placeholder="Type a message to the table…"
-              value={chatInput}
-              onChange={e => setChatInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && sendChat()}
-              style={{ flex:1, minWidth:0, background:'#111', border:`1px solid ${GLD}33`, borderRadius:8, color:'#e8e0d0', padding:'10px 12px', fontSize:13, outline:'none', fontFamily:'sans-serif' }}
-            />
-            <button type="button" onClick={sendChat} style={{ background:GLD, border:'none', borderRadius:8, color:'#1a1a1a', fontSize:12, fontWeight:700, padding:'10px 16px', cursor:'pointer', fontFamily:'sans-serif', flexShrink:0 }}>
-              Send
+        )}
+
+        {showCreate && (
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,0.65)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 50,
+              overflow: 'auto',
+              padding: 20,
+            }}
+          >
+            <form
+              onSubmit={submitCreateTable}
+              style={{
+                width: 'min(420px, 100%)',
+                padding: 28,
+                borderRadius: 16,
+                background: '#11151c',
+                border: '1px solid #2a3544',
+              }}
+            >
+              <h2 style={{ margin: '0 0 20px', fontSize: 20, color: '#6eb5ff' }}>Create table</h2>
+              <label style={{ display: 'block', fontSize: 11, color: '#6a7a8a', marginBottom: 4 }}>Table name</label>
+              <input
+                value={createName}
+                onChange={e => setCreateName(e.target.value)}
+                required
+                style={{
+                  width: '100%',
+                  padding: 10,
+                  marginBottom: 14,
+                  borderRadius: 10,
+                  border: '1px solid #2a3544',
+                  background: '#0a0e14',
+                  color: '#e8e4dc',
+                }}
+              />
+              <label style={{ display: 'block', fontSize: 11, color: '#6a7a8a', marginBottom: 4 }}>Game type</label>
+              <select
+                value={createGameType}
+                onChange={e => setCreateGameType(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: 10,
+                  marginBottom: 14,
+                  borderRadius: 10,
+                  border: '1px solid #2a3544',
+                  background: '#0a0e14',
+                  color: '#cde4ff',
+                }}
+              >
+                <option value="NLHE">NL Hold&apos;em</option>
+                <option value="PLO4">PLO (4 cards)</option>
+                <option value="PLO5">PLO (5 cards)</option>
+                <option value="PLO6">PLO (6 cards)</option>
+              </select>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: 11, color: '#6a7a8a', marginBottom: 4 }}>Small blind</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={createSb}
+                    onChange={e => setCreateSb(e.target.value)}
+                    required
+                    style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #2a3544', background: '#0a0e14', color: '#e8e4dc' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 11, color: '#6a7a8a', marginBottom: 4 }}>Big blind</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={createBb}
+                    onChange={e => setCreateBb(e.target.value)}
+                    required
+                    style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #2a3544', background: '#0a0e14', color: '#e8e4dc' }}
+                  />
+                </div>
+              </div>
+              <label style={{ display: 'block', fontSize: 11, color: '#6a7a8a', marginBottom: 4 }}>Max players</label>
+              <select
+                value={createMax}
+                onChange={e => setCreateMax(+e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: 10,
+                  marginBottom: 14,
+                  borderRadius: 10,
+                  border: '1px solid #2a3544',
+                  background: '#0a0e14',
+                  color: '#cde4ff',
+                }}
+              >
+                {MAX_PLAYER_OPTIONS.map(m => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+              <label style={{ display: 'block', fontSize: 11, color: '#6a7a8a', marginBottom: 4 }}>Password (optional)</label>
+              <input
+                type="password"
+                value={createPwd}
+                onChange={e => setCreatePwd(e.target.value)}
+                placeholder="Private table"
+                style={{
+                  width: '100%',
+                  padding: 10,
+                  marginBottom: 20,
+                  borderRadius: 10,
+                  border: '1px solid #2a3544',
+                  background: '#0a0e14',
+                  color: '#e8e4dc',
+                }}
+              />
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => setShowCreate(false)}
+                  style={{ flex: 1, padding: 12, borderRadius: 10, border: '1px solid #3a4a55', background: 'transparent', color: '#9aa8b8' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={joiningTable}
+                  style={{
+                    flex: 1,
+                    padding: 12,
+                    borderRadius: 10,
+                    border: 'none',
+                    background: joiningTable ? '#3a4a55' : '#2a6cb0',
+                    color: '#fff',
+                    fontWeight: 700,
+                  }}
+                >
+                  Create table
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        <div style={{ maxWidth: 720, margin: '0 auto' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
+            <div>
+              <h1 style={{ margin: 0, fontSize: 26, letterSpacing: 3, color: '#6eb5ff' }}>
+                FELT<span style={{ color: '#5a6a7a', fontWeight: 400 }}>CLUB</span>
+              </h1>
+              <p style={{ margin: '6px 0 0', fontSize: 13, color: '#6a7a8a' }}>
+                Signed in as <strong style={{ color: '#cde4ff' }}>{myName}</strong>
+              </p>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: 12, color: connected ? '#6abf69' : '#e57373' }}>
+                {connected ? 'Server connected' : 'Disconnected'}
+              </div>
+              <div style={{ fontSize: 13, color: '#8ab8e8', marginTop: 4 }}>Online: {onlineCount}</div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
+            {isLobbyHost ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setCreateName(`${myName}'s table`)
+                  setShowCreate(true)
+                }}
+                style={{
+                  padding: '12px 20px',
+                  borderRadius: 10,
+                  border: 'none',
+                  background: '#2a6cb0',
+                  color: '#fff',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                Create table
+              </button>
+            ) : (
+              <div
+                style={{
+                  padding: '12px 16px',
+                  borderRadius: 10,
+                  border: '1px solid #2a3544',
+                  background: '#0f141c',
+                  color: '#7a8a9a',
+                  fontSize: 13,
+                  maxWidth: 360,
+                  lineHeight: 1.45,
+                }}
+              >
+                Only the first player in the lobby can create a table. If they leave or open a table, you become
+                host next.
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => setScreen('login')}
+              style={{
+                padding: '12px 20px',
+                borderRadius: 10,
+                border: '1px solid #3a4a55',
+                background: 'transparent',
+                color: '#9aa8b8',
+                cursor: 'pointer',
+              }}
+            >
+              Change name
             </button>
           </div>
-        </div>
 
-        <div style={{ width:240, flexShrink:0, background:'#0d0d0d', borderRadius:8, padding:'10px 10px', border:'1px solid #161616' }}>
-          <div style={{ fontSize:10, color:'#444', textTransform:'uppercase', letterSpacing:0.8, marginBottom:8 }}>Scoreboard</div>
-          <div style={{ fontSize:9, color:'#3a3a3a', marginBottom:8, lineHeight:1.35 }}>Per name: hands won / lost, net chips this session.</div>
-          {Object.keys(stats).length === 0 ? (
-            <div style={{ fontSize:11, color:'#3a3a3a' }}>Play hands to fill the board.</div>
-          ) : (
-            <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 22px 22px 52px', gap:4, fontSize:9, color:'#555', textTransform:'uppercase', paddingBottom:6, borderBottom:'1px solid #1a1a1a' }}>
-                <span>Player</span><span style={{ textAlign:'center' }}>W</span><span style={{ textAlign:'center' }}>L</span><span style={{ textAlign:'right' }}>Net</span>
-              </div>
-              {Object.entries(stats)
-                .sort((a, b) => (b[1].netChips ?? 0) - (a[1].netChips ?? 0))
-                .map(([name, s]) => {
-                  const net = s.netChips ?? 0
-                  return (
-                    <div key={name} style={{ display:'grid', gridTemplateColumns:'1fr 22px 22px 52px', gap:4, fontSize:11, padding:'6px 0', borderBottom:'1px solid #141414', alignItems:'center' }}>
-                      <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', color: name === myName ? GLD : '#9a9a8a' }}>{name}</span>
-                      <span style={{ textAlign:'center', color:'#5dbb5d' }}>{s.wins ?? 0}</span>
-                      <span style={{ textAlign:'center', color:'#c07070' }}>{s.losses ?? 0}</span>
-                      <span style={{ textAlign:'right', fontWeight:700, fontVariantNumeric:'tabular-nums', color: net > 0 ? '#5dbb5d' : net < 0 ? '#e07070' : '#666' }}>
-                        {net > 0 ? '+' : ''}{net}
-                      </span>
-                    </div>
-                  )
-                })}
+          {error && (
+            <div style={{ marginBottom: 16, padding: 10, background: '#301818', border: '1px solid #5a2020', color: '#f0a0a0', fontSize: 13 }}>
+              {error}
             </div>
           )}
+
+          <div style={{ fontSize: 12, color: '#5a6a7a', marginBottom: 10 }}>Active tables</div>
+          {tables.length === 0 ? (
+            <div style={{ padding: 24, textAlign: 'center', color: '#5a6a7a', border: '1px dashed #2a3544', borderRadius: 12 }}>
+              {isLobbyHost ? 'No tables yet. Create one to start.' : 'No tables yet. Wait for the lobby host to create one.'}
+            </div>
+          ) : (
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {tables.map(row => (
+                <li
+                  key={row.tableId}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                    padding: '14px 16px',
+                    borderRadius: 12,
+                    background: '#11151c',
+                    border: '1px solid #2a3544',
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontWeight: 700, color: '#e8eef8', marginBottom: 4 }}>{row.name}</div>
+                    <div style={{ fontSize: 12, color: '#7a8a9a' }}>
+                      {typeLabel[row.gameType] || row.gameType} · ${row.smallBlind}/${row.bigBlind} · {row.playersSeated}/{row.maxSeats}{' '}
+                      seated
+                      {row.hasPassword ? ' · private' : ''}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={joiningTable || row.playersSeated >= row.maxSeats}
+                    onClick={() => openJoinTable(row)}
+                    style={{
+                      padding: '10px 18px',
+                      borderRadius: 10,
+                      border: 'none',
+                      background: joiningTable || row.playersSeated >= row.maxSeats ? '#3a4a55' : '#1e5a8a',
+                      color: '#fff',
+                      fontWeight: 700,
+                      cursor: joiningTable || row.playersSeated >= row.maxSeats ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    Join
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#07090e' }}>
+      {/* Top bar */}
+      <header
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          padding: '10px 16px',
+          borderBottom: '1px solid #1a2230',
+          flexWrap: 'wrap',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            onClick={backToLobby}
+            style={{
+              padding: '8px 14px',
+              borderRadius: 8,
+              border: '1px solid #3a5a78',
+              background: '#0f1824',
+              color: '#8bc4ff',
+              fontSize: 13,
+              cursor: 'pointer',
+            }}
+          >
+            ← Lobby
+          </button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={{ fontSize: 20, fontWeight: 800, color: '#6eb5ff', letterSpacing: 2 }}>FELTCLUB</span>
+            <span style={{ fontSize: 12, color: '#7a8a9a' }}>
+              {tableName || 'Table'} · {gameType} · ${smallBlind}/${bigBlind}
+            </span>
+          </div>
+          {isHost && (
+            <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 8, background: '#1a3050', color: '#8bc4ff' }}>
+              HOST
+            </span>
+          )}
+          {isSuper && (
+            <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 8, background: '#2a2040', color: '#c9a8ff' }}>
+              SUPER ADMIN
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {isHost && game && game.phase !== 'idle' && (
+            <button
+              type="button"
+              onClick={() => hostReveal(!game.showAllCards)}
+              style={{
+                padding: '6px 12px',
+                borderRadius: 8,
+                border: '1px solid #4a6080',
+                background: '#152030',
+                color: '#cde4ff',
+                fontSize: 12,
+                cursor: 'pointer',
+              }}
+            >
+              {game.showAllCards ? 'Hide cards' : 'Reveal cards'}
+            </button>
+          )}
+          {isHost && (!game || game.phase === 'idle') && (
+            <>
+              <button type="button" onClick={hostDeal} style={hostMiniBtn}>
+                Deal
+              </button>
+              <button type="button" onClick={hostNextHand} style={hostMiniBtn}>
+                Next hand
+              </button>
+            </>
+          )}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#7a8a9a', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={fourColor}
+              onChange={e => {
+                const on = e.target.checked
+                setFourColor(on)
+                try {
+                  localStorage.setItem(FOUR_COLOR_STORAGE_KEY, on ? '1' : '0')
+                } catch {
+                  /* ignore */
+                }
+              }}
+            />
+            4-colour deck
+          </label>
+          {isHost && (!game || game.phase === 'idle') && (
+            <select
+              value={gameType}
+              onChange={e => changeGameType(e.target.value)}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 8,
+                border: '1px solid #2a4058',
+                background: '#0a1018',
+                color: '#cde4ff',
+                fontSize: 13,
+              }}
+            >
+              {gameTypes.map(gt => (
+                <option key={gt} value={gt}>
+                  {gt}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      </header>
+
+      {error && (
+        <div style={{ margin: '0 16px', padding: 10, background: '#301818', border: '1px solid #5a2020', color: '#f0a0a0', fontSize: 13 }}>
+          {error}
+        </div>
+      )}
+
+      {game?.phase === 'idle' && autoSecs != null && autoSecs > 0 && (
+        <div style={{ margin: '8px 16px', padding: 10, background: '#0f1822', border: '1px solid #2a4058', fontSize: 13, color: '#8ab8e8' }}>
+          Next hand in <strong>{autoSecs}s</strong> (auto)
+        </div>
+      )}
+
+      <div style={{ flex: 1, display: 'flex', minHeight: 0, padding: 12, gap: 12 }}>
+        {/* Table + log */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
+          <div
+            style={{
+              flex: 1,
+              minHeight: Math.max(520, Math.min(720, Math.round(vw * 1.15))),
+              position: 'relative',
+              borderRadius: 20,
+              overflow: 'auto',
+              background: 'radial-gradient(ellipse 55% 42% at 50% 48%, #1e4a7a 0%, #153a62 35%, #0f2848 100%)',
+              border: '3px solid #2a5080',
+              boxShadow: 'inset 0 0 80px rgba(0,40,80,0.35), 0 12px 40px rgba(0,0,0,0.45)',
+            }}
+          >
+            <div
+              style={{
+                position: 'absolute',
+                left: '50%',
+                top: '42%',
+                transform: 'translate(-50%,-50%)',
+                textAlign: 'center',
+                zIndex: 1,
+              }}
+            >
+              <div style={{ fontSize: 16, color: '#8ab8e8', letterSpacing: 2, marginBottom: 12 }}>
+                {(game && PHASE_LABELS[game.phase]) || 'WAITING'}
+              </div>
+              <div
+                style={{
+                  width: boardRowW * boardScale,
+                  height: boardRowH * boardScale,
+                  margin: '0 auto 12px',
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'flex-start',
+                  maxWidth: '100%',
+                }}
+              >
+                <div style={{ transform: `scale(${boardScale})`, transformOrigin: 'top center' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: BOARD_CARD_GAP,
+                      flexWrap: 'wrap',
+                      justifyContent: 'center',
+                      width: boardRowW,
+                    }}
+                  >
+                    {[0, 1, 2, 3, 4].map(i => (
+                      <Card
+                        key={i}
+                        variant="board"
+                        card={game?.community?.[i]}
+                        fourColor={fourColor}
+                        back={!game?.community?.[i]}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div
+                style={{
+                  display: 'inline-block',
+                  padding: '10px 22px',
+                  borderRadius: 24,
+                  background: 'rgba(0,0,0,0.45)',
+                  border: '2px solid #3a6a9a',
+                  color: '#b8d8ff',
+                  fontWeight: 700,
+                  fontSize: 20,
+                }}
+              >
+                Pot ${game?.pot ?? 0}
+              </div>
+            </div>
+
+            {seatSlots.map((slot, i) => {
+              const occIdx = slot ? occupiedSorted.findIndex(p => p.seat === i) : -1
+              const pos = slot
+                ? seatPosition(occIdx >= 0 ? occIdx : 0, occupiedCount, 44, 46)
+                : seatPosition(i, tableSeats, 40, 42)
+              const gp = slot ? mergedGamePlayers(slot.socketId) : null
+              const active = gp && game?.players?.[game.currentPlayer]?.socketId === slot?.socketId
+              const winner = gp && game?.winners?.includes(slot.socketId)
+              const cards = slot ? cardsForSeat(slot) : null
+              const showCards =
+                cards &&
+                cards.length > 0 &&
+                cards.some(c => c !== null && typeof c === 'object' && c.r)
+
+              return (
+                <div
+                  key={slot ? slot.socketId : `empty-${i}`}
+                  style={{
+                    position: 'absolute',
+                    ...pos,
+                    width: 'max-content',
+                    maxWidth: 'min(92vw, 360px)',
+                    zIndex: slot ? 3 : 2,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 12,
+                    overflow: 'hidden',
+                    boxSizing: 'border-box',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: slot ? holeRowW * holeScale : undefined,
+                      minHeight: slot ? holeRowH * holeScale : undefined,
+                      maxWidth: '100%',
+                      display: 'flex',
+                      justifyContent: 'center',
+                      alignItems: 'flex-start',
+                    }}
+                  >
+                    <div
+                      style={
+                        slot
+                          ? { transform: `scale(${holeScale})`, transformOrigin: 'top center' }
+                          : undefined
+                      }
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          gap: HOLE_CARD_GAP,
+                          flexWrap: 'wrap',
+                          justifyContent: 'center',
+                          maxWidth: holeRowW,
+                        }}
+                      >
+                    {!slot ? (
+                      <span style={{ fontSize: 18, color: '#3a5a78' }}>Empty</span>
+                    ) : showCards ? (
+                      cards.map((c, j) => (
+                        <Card
+                          key={j}
+                          variant="hole"
+                          card={c}
+                          fourColor={fourColor}
+                          back={!c || !c.r}
+                        />
+                      ))
+                    ) : cards ? (
+                      cards.map((_, j) => (
+                        <Card key={j} variant="hole" back fourColor={fourColor} />
+                      ))
+                    ) : (
+                      <span style={{ fontSize: 18, color: '#5a7a9a' }}>—</span>
+                    )}
+                      </div>
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      padding: '10px 16px',
+                      borderRadius: 12,
+                      background: winner ? 'rgba(40,80,40,0.85)' : active ? 'rgba(40,60,90,0.9)' : 'rgba(0,0,0,0.5)',
+                      border: `2px solid ${winner ? '#5a8a5a' : active ? '#6eb5ff' : '#2a4058'}`,
+                      fontSize: 20,
+                      maxWidth: 'min(96vw, 1200px)',
+                      textAlign: 'center',
+                      color: '#e8eef8',
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {slot ? slot.name : ''}
+                      {slot?.socketId === myId ? ' · you' : ''}
+                    </div>
+                    <div style={{ fontSize: 17, color: '#9ab8d8', fontVariantNumeric: 'tabular-nums' }}>
+                      {slot?.unlimitedChips ? '∞' : `$${slot?.stack ?? 0}`}
+                    </div>
+                    {gp?.handLabel && (
+                      <div style={{ fontSize: 15, color: '#a8d8a8' }}>{gp.handLabel}</div>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+
+          {/* Actions */}
+          {myTurn && raiseBounds && (
+            <div
+              style={{
+                padding: 12,
+                background: '#101820',
+                borderRadius: 12,
+                border: '1px solid #2a4058',
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                gap: 10,
+              }}
+            >
+              <span style={{ fontSize: 12, color: '#8ab8e8' }}>
+                Your turn · <strong style={{ color: actSecsLeft <= 5 ? '#ff8a80' : '#b8d8ff' }}>{actSecsLeft}s</strong>
+              </span>
+              <button type="button" onClick={() => doAction('fold')} style={btnFold}>
+                Fold
+              </button>
+              {raiseBounds.toCall === 0 ? (
+                <button type="button" onClick={() => doAction('check')} style={btnOk}>
+                  Check
+                </button>
+              ) : (
+                <button type="button" onClick={() => doAction('call')} style={btnOk}>
+                  Call ${raiseBounds.toCall}
+                </button>
+              )}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#8a9aaa' }}>
+                Raise to
+                <input
+                  type="range"
+                  min={raiseBounds.minRaiseTo}
+                  max={raiseBounds.maxRaiseTo}
+                  value={Math.min(raiseTo, raiseBounds.maxRaiseTo)}
+                  onChange={e => setRaiseTo(+e.target.value)}
+                />
+                <span style={{ minWidth: 48, fontVariantNumeric: 'tabular-nums' }}>${raiseTo}</span>
+              </label>
+              <button type="button" onClick={doRaise} style={btnRaise}>
+                Raise
+              </button>
+            </div>
+          )}
+
+          {/* Hand log */}
+          <div
+            ref={logRef}
+            style={{
+              height: 120,
+              overflowY: 'auto',
+              padding: 10,
+              background: '#0a0e14',
+              borderRadius: 10,
+              border: '1px solid #1a2430',
+              fontSize: 11,
+              fontFamily: 'ui-monospace, monospace',
+              color: '#7a8a9a',
+            }}
+          >
+            {(game?.log || []).map((line, i) => (
+              <div key={i} style={{ color: line.startsWith('──') ? '#5a8ab0' : '#6a7a8a' }}>
+                {line}
+              </div>
+            ))}
+            {!game?.log?.length && <div style={{ color: '#3a4a55' }}>Hand history appears here.</div>}
+          </div>
         </div>
 
-        <div style={{ width:228, flexShrink:0, background:'#0d0d0d', borderRadius:8, padding:'8px 10px', border:'1px solid #161616' }}>
-          <div style={{ fontSize:10, color:'#444', textTransform:'uppercase', letterSpacing:0.8, marginBottom:6 }}>Players — {roomPlayers.length}</div>
+        {/* Sidebar */}
+        <aside
+          style={{
+            width: 300,
+            flexShrink: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            minHeight: 0,
+            maxHeight: '100%',
+          }}
+        >
+          {roomPlayers.length < 2 && !game && (
+            <div style={{ padding: 12, background: '#101820', borderRadius: 10, border: '1px solid #1a2838', fontSize: 12, color: '#6a7a8a' }}>
+              Invite players:{' '}
+              <span style={{ color: '#6eb5ff', wordBreak: 'break-all' }}>{shareUrl}</span>
+            </div>
+          )}
+
           {isHost && (
-            <div style={{
-              marginBottom:10, padding:'10px 10px', borderRadius:8,
-              background:'#14100a', border:`1px solid ${GLD}44`, fontFamily:'sans-serif'
-            }}>
-              <div style={{ fontSize:9, color:'#666', textTransform:'uppercase', letterSpacing:0.6, marginBottom:4 }}>Host bank</div>
-              <div style={{ fontSize:20, fontWeight:800, color:GLD, fontVariantNumeric:'tabular-nums', marginBottom:8 }}>${hostBank.toLocaleString()}</div>
-              <div style={{ fontSize:9, color:'#555', lineHeight:1.35, marginBottom:8 }}>
-                Chips come from this bank. Players start at $0 — fund them here, then deal when everyone has at least the big blind (${BIG_BLIND}).
+            <div style={{ padding: 12, background: '#101820', borderRadius: 10, border: '1px solid #2a5080' }}>
+              <div style={{ fontSize: 10, color: '#6a8aaa', textTransform: 'uppercase', marginBottom: 4 }}>Host bank</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: '#8bc4ff', fontVariantNumeric: 'tabular-nums' }}>
+                ${hostBank.toLocaleString()}
               </div>
-              <label style={{ display:'block', fontSize:9, color:'#666', marginBottom:4 }}>Amount to give or collect</label>
+              <p style={{ margin: '8px 0', fontSize: 11, color: '#5a6a7a', lineHeight: 1.4 }}>
+                Assign chips before play. You play with <strong>∞</strong> on the table.
+              </p>
               <input
                 type="number"
-                inputMode="numeric"
-                min={0}
-                placeholder="e.g. 2500"
+                placeholder="Amount"
                 value={hostAssignAmt}
                 onChange={e => setHostAssignAmt(e.target.value)}
                 style={{
-                  width:'100%', boxSizing:'border-box', background:'#111', border:'1px solid #333', borderRadius:6,
-                  color:'#e8e0d0', padding:'8px 10px', fontSize:13, fontFamily:'sans-serif', marginBottom:6
+                  width: '100%',
+                  padding: 8,
+                  marginBottom: 8,
+                  borderRadius: 8,
+                  border: '1px solid #2a4058',
+                  background: '#0a1018',
+                  color: '#e8eef8',
                 }}
               />
-              <div style={{ fontSize:9, color:'#3a3a3a', lineHeight:1.35 }}>
-                Use <strong style={{ color:'#6a8a6a' }}>Give</strong> / <strong style={{ color:'#8a6a6a' }}>Collect</strong> on each player. Remove kicks a disconnected seat.
-              </div>
             </div>
           )}
-          {roomPlayers.map(p => (
-            <div key={p.socketId} style={{ fontSize:11, color: p.socketId === myId ? GLD : '#888', padding:'6px 0', borderBottom:'1px solid #141414' }}>
-              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:4, marginBottom:4 }}>
-                <div style={{ display:'flex', alignItems:'center', gap:5, minWidth:0 }}>
-                  <div style={{ width:5, height:5, borderRadius:'50%', background:'#5dbb5d', flexShrink:0 }} />
-                  <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.name}{p.socketId === myId ? ' ✦' : ''}</span>
+
+          <div style={{ flex: 1, minHeight: 140, padding: 10, background: '#101820', borderRadius: 10, border: '1px solid #1a2838', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ fontSize: 11, color: '#5a6a7a', marginBottom: 8 }}>CHAT</div>
+            <div style={{ flex: 1, overflowY: 'auto', fontSize: 12, marginBottom: 8 }}>
+              {chat.map((m, i) => (
+                <div key={i} style={{ marginBottom: 6 }}>
+                  <span style={{ color: '#6eb5ff' }}>{m.from}:</span> <span style={{ color: '#9aa8b8' }}>{m.text}</span>
                 </div>
-                {isHost && p.socketId !== myId && (
-                  <button type="button" onClick={() => requestRemovePlayer(p.name, p.socketId)}
-                    style={{ background:'transparent', border:'1px solid #6a3a3a', borderRadius:4, color:'#c07070', fontSize:9, padding:'2px 6px', cursor:'pointer', fontFamily:'sans-serif', flexShrink:0 }}>
-                    Remove
-                  </button>
-                )}
-              </div>
-              <div style={{ fontSize:10, color:'#555', fontVariantNumeric:'tabular-nums' }}>Stack ${p.stack?.toLocaleString?.() ?? p.stack}</div>
-              {isHost && (
-                <div style={{ display:'flex', gap:4, marginTop:6, flexWrap:'wrap' }}>
-                  <button type="button" onClick={() => hostAssignChips(p.socketId, hostAssignAmt)}
-                    style={{ background:'rgba(26,58,42,0.5)', border:'1px solid #2a5a3a', borderRadius:4, color:'#7dcc7d', fontSize:9, padding:'3px 8px', cursor:'pointer', fontFamily:'sans-serif' }}>
-                    Give
-                  </button>
-                  <button type="button" onClick={() => hostAssignChips(p.socketId, -Math.abs(Math.trunc(Number(hostAssignAmt)) || 0))}
-                    style={{ background:'rgba(58,26,26,0.4)', border:'1px solid #5a2a2a', borderRadius:4, color:'#d08080', fontSize:9, padding:'3px 8px', cursor:'pointer', fontFamily:'sans-serif' }}>
-                    Collect
-                  </button>
-                </div>
-              )}
+              ))}
             </div>
-          ))}
-        </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && sendChat()}
+                placeholder="Message…"
+                style={{
+                  flex: 1,
+                  padding: 8,
+                  borderRadius: 8,
+                  border: '1px solid #2a3544',
+                  background: '#0a0e14',
+                  color: '#e8e4dc',
+                  fontSize: 13,
+                }}
+              />
+              <button type="button" onClick={sendChat} style={{ ...btnOk, padding: '8px 12px' }}>
+                Send
+              </button>
+            </div>
+          </div>
+
+          <div
+            style={{
+              padding: 10,
+              background: '#101820',
+              borderRadius: 10,
+              border: '1px solid #1a2838',
+              flex: 1,
+              minHeight: 120,
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            }}
+          >
+            <div style={{ fontSize: 11, color: '#5a6a7a', marginBottom: 8 }}>
+              PLAYERS ({roomPlayers.length})
+            </div>
+            <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
+            {[...roomPlayers].sort((a, b) => (a.seat ?? 0) - (b.seat ?? 0)).map(p => (
+              <div
+                key={p.socketId}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                  padding: '8px 0',
+                  borderBottom: '1px solid #1a2430',
+                  fontSize: 12,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
+                      background: p.online ? '#4caf50' : '#444',
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', color: p.socketId === myId ? '#8bc4ff' : '#c8d4e0' }}>
+                    <span style={{ color: '#5a6a7a', fontSize: 10, marginRight: 4 }}>#{typeof p.seat === 'number' ? p.seat + 1 : '?'}</span>
+                    {p.name}
+                    {p.isHost ? ' · host' : ''}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                  <span style={{ fontVariantNumeric: 'tabular-nums', color: '#7a8a9a' }}>
+                    {p.unlimitedChips ? '∞' : `$${p.stack ?? 0}`}
+                  </span>
+                  {isHost && p.socketId !== myId && (
+                    <>
+                      <button type="button" onClick={() => assignChips(p.socketId, 1)} style={miniBtn}>
+                        +
+                      </button>
+                      <button type="button" onClick={() => assignChips(p.socketId, -1)} style={miniBtn}>
+                        −
+                      </button>
+                      <button type="button" onClick={() => kick(p.socketId)} style={miniKick}>
+                        Kick
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+            </div>
+          </div>
+
+          <div style={{ padding: 10, background: '#101820', borderRadius: 10, border: '1px solid #1a2838' }}>
+            <div style={{ fontSize: 11, color: '#5a6a7a', marginBottom: 8 }}>SCOREBOARD</div>
+            {Object.keys(stats).length === 0 ? (
+              <div style={{ fontSize: 12, color: '#4a5560' }}>Stats after hands play.</div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 24px 24px 40px', gap: 4, fontSize: 11 }}>
+                <span style={{ color: '#4a5560' }}>Player</span>
+                <span style={{ color: '#4a5560', textAlign: 'center' }}>W</span>
+                <span style={{ color: '#4a5560', textAlign: 'center' }}>L</span>
+                <span style={{ color: '#4a5560', textAlign: 'right' }}>Net</span>
+                {Object.entries(stats)
+                  .sort((a, b) => (b[1].netChips || 0) - (a[1].netChips || 0))
+                  .map(([k, s]) => (
+                    <div key={k} style={{ display: 'contents', fontSize: 12 }}>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{k}</span>
+                      <span style={{ textAlign: 'center', color: '#6abf69' }}>{s.wins}</span>
+                      <span style={{ textAlign: 'center', color: '#e57373' }}>{s.losses}</span>
+                      <span
+                        style={{
+                          textAlign: 'right',
+                          fontVariantNumeric: 'tabular-nums',
+                          color: (s.netChips || 0) >= 0 ? '#8bc4a8' : '#e0a0a0',
+                        }}
+                      >
+                        {(s.netChips || 0) > 0 ? '+' : ''}
+                        {s.netChips}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        </aside>
       </div>
     </div>
   )
+}
+
+const btnFold = {
+  padding: '8px 16px',
+  borderRadius: 8,
+  border: '1px solid #6a3030',
+  background: 'transparent',
+  color: '#e57373',
+  cursor: 'pointer',
+  fontSize: 13,
+}
+const btnOk = {
+  padding: '8px 16px',
+  borderRadius: 8,
+  border: '1px solid #2a6080',
+  background: 'rgba(40,90,130,0.4)',
+  color: '#b8d8ff',
+  cursor: 'pointer',
+  fontSize: 13,
+}
+const btnRaise = {
+  padding: '8px 16px',
+  borderRadius: 8,
+  border: 'none',
+  background: '#2a6cb0',
+  color: '#fff',
+  fontWeight: 700,
+  cursor: 'pointer',
+  fontSize: 13,
+}
+const miniBtn = {
+  padding: '2px 8px',
+  fontSize: 11,
+  borderRadius: 6,
+  border: '1px solid #3a5a78',
+  background: '#1a2838',
+  color: '#8bc4ff',
+  cursor: 'pointer',
+}
+const miniKick = {
+  padding: '2px 6px',
+  fontSize: 10,
+  borderRadius: 6,
+  border: '1px solid #5a3030',
+  background: 'transparent',
+  color: '#e08080',
+  cursor: 'pointer',
+}
+const hostMiniBtn = {
+  padding: '6px 12px',
+  borderRadius: 8,
+  border: '1px solid #2a6080',
+  background: 'rgba(40,90,130,0.35)',
+  color: '#b8d8ff',
+  fontSize: 12,
+  cursor: 'pointer',
 }
