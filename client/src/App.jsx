@@ -164,17 +164,19 @@ function seatPosition(i, n, rxPct, ryPct) {
   }
 }
 
-function usdToBB(usd, bb) {
-  if (!bb || bb <= 0 || usd == null || !Number.isFinite(Number(usd))) return 0
-  return Number(usd) / bb
+/** Chip amounts are stored as dollar integers on the server; display without BB conversion. */
+function formatChips(amount) {
+  const n = Math.trunc(Number(amount))
+  if (!Number.isFinite(n)) return '—'
+  return `$${n.toLocaleString()}`
 }
 
-function formatBBAmount(usd, bb) {
-  const v = usdToBB(usd, bb)
-  if (!Number.isFinite(v)) return '—'
-  if (v >= 100) return `${Math.round(v)} BB`
-  if (v >= 10) return `${v.toFixed(1)} BB`
-  return `${v.toFixed(2)} BB`
+function formatChipsSigned(amount) {
+  const n = Math.trunc(Number(amount))
+  if (!Number.isFinite(n)) return '—'
+  if (n === 0) return '$0'
+  const sign = n > 0 ? '+' : '-'
+  return `${sign}$${Math.abs(n).toLocaleString()}`
 }
 
 function playerInitials(name) {
@@ -185,15 +187,15 @@ function playerInitials(name) {
   return t.slice(0, 2).toUpperCase()
 }
 
-/** Small chip icon by street bet size (visual tier). */
-function BetChipIcon({ streetBet, bb }) {
-  const bbs = usdToBB(streetBet, bb)
+/** Small chip icon by street bet size (visual tier, raw $). */
+function BetChipIcon({ streetBet }) {
+  const v = Math.trunc(Number(streetBet)) || 0
   let fill = '#c62828'
-  if (bbs >= 20) fill = '#1565c0'
-  else if (bbs >= 10) fill = '#2e7d32'
-  else if (bbs >= 3) fill = '#f9a825'
-  else if (bbs <= 0) fill = 'transparent'
-  if (bbs <= 0) return null
+  if (v >= 400) fill = '#1565c0'
+  else if (v >= 200) fill = '#2e7d32'
+  else if (v >= 60) fill = '#f9a825'
+  else if (v <= 0) fill = 'transparent'
+  if (v <= 0) return null
   return (
     <span
       aria-hidden
@@ -1616,7 +1618,7 @@ export default function App() {
                       marginBottom: 4,
                     }}
                   >
-                    Total Pot: {formatBBAmount(game?.pot ?? 0, bigBlind)}
+                    Total Pot: {formatChips(game?.pot ?? 0)}
                   </div>
                   <div style={{ pointerEvents: 'none', display: 'flex', justifyContent: 'center' }}>
                     <PotChipDecor />
@@ -1816,7 +1818,7 @@ export default function App() {
                             fontVariantNumeric: 'tabular-nums',
                           }}
                         >
-                          {seatUnlimited ? '∞ BB' : formatBBAmount(seatStack ?? 0, bigBlind)}
+                          {seatUnlimited ? '∞' : formatChips(seatStack ?? 0)}
                         </div>
                         {gp &&
                           game &&
@@ -1837,9 +1839,9 @@ export default function App() {
                               }}
                             >
                               <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-                                <BetChipIcon streetBet={gp.streetBet} bb={bigBlind} />
+                                <BetChipIcon streetBet={gp.streetBet} />
                               </span>
-                              {formatBBAmount(gp.streetBet, bigBlind)}
+                              {formatChips(gp.streetBet)}
                             </div>
                           )}
                         {gp?.handLabel && (
@@ -1893,8 +1895,7 @@ export default function App() {
                 }}
               >
                 <span style={{ textAlign: 'center' }}>
-                  Raise to <strong style={{ color: '#fff' }}>{formatBBAmount(raiseTo, bigBlind)}</strong>
-                  <span style={{ color: '#6a7384', fontWeight: 400 }}> (${raiseTo})</span>
+                  Raise to <strong style={{ color: '#fff' }}>{formatChips(raiseTo)}</strong>
                 </span>
                 <input
                   type="range"
@@ -1915,7 +1916,7 @@ export default function App() {
                   </button>
                 ) : (
                   <button type="button" onClick={() => doAction('call')} style={btnCall}>
-                    CALL {formatBBAmount(raiseBounds.toCall, bigBlind)}
+                    CALL {formatChips(raiseBounds.toCall)}
                   </button>
                 )}
                 <button type="button" onClick={doRaise} style={btnRaise}>
@@ -1972,7 +1973,7 @@ export default function App() {
             <div style={{ padding: 12, background: '#101820', borderRadius: 10, border: '1px solid #2a5080' }}>
               <div style={{ fontSize: 10, color: '#6a8aaa', textTransform: 'uppercase', marginBottom: 4 }}>Host bank</div>
               <div style={{ fontSize: 22, fontWeight: 800, color: '#8bc4ff', fontVariantNumeric: 'tabular-nums' }}>
-                ${hostBank.toLocaleString()}
+                {formatChips(hostBank)}
               </div>
               <p style={{ margin: '8px 0', fontSize: 11, color: '#5a6a7a', lineHeight: 1.4 }}>
                 {me?.unlimitedChips && (me?.stack ?? 0) <= 0 ? (
@@ -2110,7 +2111,7 @@ export default function App() {
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
                   <span style={{ fontVariantNumeric: 'tabular-nums', color: '#7a8a9a' }}>
-                    {p.unlimitedChips && (p.stack ?? 0) <= 0 ? '∞' : `$${p.stack ?? 0}`}
+                    {p.unlimitedChips && (p.stack ?? 0) <= 0 ? '∞' : formatChips(p.stack ?? 0)}
                   </span>
                   {isHost && p.socketId !== sid && (
                     <>
@@ -2155,8 +2156,7 @@ export default function App() {
                           color: (s.netChips || 0) >= 0 ? '#8bc4a8' : '#e0a0a0',
                         }}
                       >
-                        {(s.netChips || 0) > 0 ? '+' : ''}
-                        {s.netChips}
+                        {formatChipsSigned(s.netChips || 0)}
                       </span>
                     </div>
                   ))}

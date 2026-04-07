@@ -17,12 +17,15 @@ import {
   canStartHand,
   statKey,
   getSeatedPlayersSorted,
+  stepBoardRunout,
 } from './poker/engine.js'
 import { bestNLHE, bestPLOHand, HAND_NAMES } from './poker/eval.js'
 
 const PORT = 3001
 /** Pause after showdown (or between-hands) before auto-dealing the next hand. */
 const NEXT_HAND_DELAY_MS = 5000
+/** Delay between dealing flop / turn / river when everyone is all-in (clients see each street briefly). */
+const RUNOUT_STREET_DELAY_MS = 1500
 const CHAT_MAX = 80
 /** Max spectators (standing) when seatAssignment is 'choose'. */
 const MAX_TABLE_OBSERVERS = 32
@@ -203,11 +206,51 @@ function clearAutoDeal(room) {
   room.autoDealAt = null
 }
 
+function clearRunoutChain(room) {
+  if (room?.runoutStepTimer) {
+    clearTimeout(room.runoutStepTimer)
+    room.runoutStepTimer = null
+  }
+}
+
+/**
+ * Apply handleAction / runout result: broadcast, chain delayed runout steps, or finish the hand.
+ */
+function processActionResult(room, tableId, r) {
+  if (r.handOver) {
+    clearRunoutChain(room)
+    afterAction(room, tableId)
+    return
+  }
+  if (r.runoutPending) {
+    clearRunoutChain(room)
+    clearTurn(room)
+    broadcastRoom(tableId)
+    refreshTurnTimer(tableId)
+    room.runoutStepTimer = setTimeout(() => {
+      room.runoutStepTimer = null
+      const rm = getRoom(tableId)
+      if (!rm?.game) return
+      if (rm.game.phase === 'showdown' || rm.game.phase === 'idle') {
+        afterAction(rm, tableId)
+        return
+      }
+      const r2 = stepBoardRunout(rm)
+      processActionResult(rm, tableId, r2)
+    }, RUNOUT_STREET_DELAY_MS)
+    return
+  }
+  if (r.ok) {
+    afterAction(room, tableId)
+  }
+}
+
 /** Uses `startHand(room)`, which reads `room.gameType` so NLHE vs PLO4/5/6 get the correct hole count. */
 function tryStartNextHand(tableId) {
   const r = getRoom(tableId)
   if (!r?.game || (r.game.phase !== 'idle' && r.game.phase !== 'showdown')) return
   if (!canStartHand(r)) return
+  clearRunoutChain(r)
   if (startHand(r)) {
     broadcastRoom(tableId)
     refreshTurnTimer(tableId)
@@ -269,10 +312,11 @@ function refreshTurnTimer(tableId) {
     const p = rg.players[rg.currentPlayer]
     if (!p || p.socketId !== cur.socketId) return
     const toCall = Math.max(0, rg.currentBet - p.streetBet)
-    if (toCall === 0) handleAction(room, p.socketId, { type: 'check' })
-    else if (p.unlimitedChips || p.stack >= toCall) handleAction(room, p.socketId, { type: 'call' })
-    else handleAction(room, p.socketId, { type: 'fold' })
-    afterAction(room, tableId)
+    let ar = { ok: false }
+    if (toCall === 0) ar = handleAction(room, p.socketId, { type: 'check' })
+    else if (p.unlimitedChips || p.stack >= toCall) ar = handleAction(room, p.socketId, { type: 'call' })
+    else ar = handleAction(room, p.socketId, { type: 'fold' })
+    if (ar.ok || ar.handOver || ar.runoutPending) processActionResult(room, tableId, ar)
   }, TURN_SECONDS * 1000)
 }
 
@@ -460,6 +504,7 @@ function removeFromTable(tableId, socketId) {
   if (!room) return
   const leaving = room.players.find(p => p.socketId === socketId)
   clearTurn(room)
+  clearRunoutChain(room)
   if (room.game && handInProgress(room.game)) {
     const ingame = room.game.players.some(p => p.socketId === socketId)
     if (ingame) {
@@ -872,6 +917,7 @@ io.on('connection', socket => {
       return
     }
     clearAutoDeal(room)
+    clearRunoutChain(room)
     if (!canStartHand(room)) {
       socket.emit('error_msg', 'Need at least 2 players with stacks at least equal to the big blind.')
       return
@@ -890,6 +936,7 @@ io.on('connection', socket => {
       return
     }
     clearAutoDeal(room)
+    clearRunoutChain(room)
     if (!canStartHand(room)) {
       socket.emit('error_msg', 'Need at least 2 players with stacks at least equal to the big blind.')
       return
@@ -920,8 +967,9 @@ io.on('connection', socket => {
   socket.on('player_action', ({ tableId, action }) => {
     const room = getRoom(tableId)
     if (!room?.game) return
+    clearRunoutChain(room)
     const r = handleAction(room, socket.id, action)
-    if (r.ok) afterAction(room, tableId)
+    if (r.ok || r.handOver || r.runoutPending) processActionResult(room, tableId, r)
   })
 
   socket.on('chat_message', ({ tableId, text }) => {

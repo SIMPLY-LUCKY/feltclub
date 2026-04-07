@@ -429,12 +429,7 @@ export function handleAction(room, socketId, action) {
 }
 
 function runOutBoard(room) {
-  const g = room.game
-  while (g.phase !== 'showdown' && g.phase !== 'idle') {
-    const r = advanceStreet(room)
-    if (r.handOver) return r
-  }
-  return { ok: true, handOver: true }
+  return stepBoardRunout(room)
 }
 
 function advanceStreet(room) {
@@ -523,10 +518,20 @@ function advanceStreet(room) {
 
   const order = postStreetActionOrder(g)
   if (order.length === 0) {
-    return advanceStreet(room)
+    g.toAct = []
+    g.currentPlayer = -1
+    syncAllStacksToRoom(g, room)
+    return { ok: true, runoutPending: true }
   }
   g.toAct = order
   g.currentPlayer = order[0]
   syncAllStacksToRoom(g, room)
   return { ok: true }
+}
+
+/** One street toward showdown when no one can act (e.g. all-in); index.js chains these with a delay between steps. */
+export function stepBoardRunout(room) {
+  const g = room.game
+  if (!g || g.phase === 'showdown' || g.phase === 'idle') return { ok: true, handOver: true }
+  return advanceStreet(room)
 }
