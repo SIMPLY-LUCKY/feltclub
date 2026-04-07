@@ -1,4 +1,4 @@
-import { bestNLHE, bestOmaha, compareScores, HAND_NAMES } from './eval.js'
+import { bestNLHE, bestPLOHand, compareScores, HAND_NAMES } from './eval.js'
 
 export const SB = 10
 export const BB = 20
@@ -75,9 +75,18 @@ export function potLimitMaxTotalStreet(game, p) {
   return p.streetBet + toCall + game.pot + toCall
 }
 
+function isPloVariant(v) {
+  return v === 'PLO4' || v === 'PLO5' || v === 'PLO6'
+}
+
 function scoreFor(p, g) {
-  if (g.variant === 'NLHE') return bestNLHE(p.holeCards, g.community)
-  return bestOmaha(p.holeCards, g.community)
+  if (isPloVariant(g.variant)) return bestPLOHand(p.holeCards, g.community)
+  return bestNLHE(p.holeCards, g.community)
+}
+
+/** Set on the room from index.js: starts the between-hands auto-deal countdown. */
+function notifyHandCompleteForAutoDeal(room) {
+  if (typeof room.onShowdownComplete === 'function') room.onShowdownComplete()
 }
 
 function syncAllStacksToRoom(g, room) {
@@ -103,11 +112,18 @@ function awardBySidePots(g, room) {
       continue
     }
     const scores = eligible.map(p => ({ p, s: scoreFor(p, g) }))
-    let best = scores[0].s
-    for (const x of scores) {
+    const valid = scores.filter(x => x.s != null)
+    if (valid.length === 0) {
+      const share = Math.floor(layerAmt / eligible.length) || 0
+      for (const w of eligible) payouts[w.socketId] += share
+      prev = level
+      continue
+    }
+    let best = valid[0].s
+    for (const x of valid) {
       if (compareScores(x.s, best) > 0) best = x.s
     }
-    const winners = scores.filter(x => compareScores(x.s, best) === 0)
+    const winners = valid.filter(x => compareScores(x.s, best) === 0)
     const share = Math.floor(layerAmt / winners.length)
     for (const w of winners) payouts[w.p.socketId] += share
     prev = level
@@ -199,7 +215,8 @@ function postStreetActionOrder(g) {
 
 export function startHand(room) {
   if (!canStartHand(room)) return false
-  const v = VARIANTS[room.gameType] || VARIANTS.NLHE
+  const gt = room.gameType && VARIANTS[room.gameType] ? room.gameType : 'NLHE'
+  const v = VARIANTS[gt]
   const deck = shuffle(mkDeck())
   let di = 0
   const prev = room.game
@@ -245,7 +262,7 @@ export function startHand(room) {
   const pot = gamePlayers.reduce((s, p) => s + p.streetBet, 0)
 
   room.game = {
-    variant: room.gameType,
+    variant: gt,
     phase: 'preflop',
     deck: deck.slice(di),
     community: [],
@@ -319,6 +336,7 @@ function endFoldWin(room, g, winner) {
   recordStats(room, g)
   delete g.handStartStacks
   syncAllStacksToRoom(g, room)
+  notifyHandCompleteForAutoDeal(room)
   return { ok: true, handOver: true }
 }
 
@@ -440,6 +458,7 @@ function advanceStreet(room) {
     g.pot = 0
     delete g.handStartStacks
     syncAllStacksToRoom(g, room)
+    notifyHandCompleteForAutoDeal(room)
     return { ok: true, handOver: true }
   }
 
@@ -462,21 +481,28 @@ function advanceStreet(room) {
     g.phase = 'showdown'
     g.showAllCards = true
     const active = g.players.filter(p => !p.folded)
-    const scores = active.map(p => ({ p, s: scoreFor(p, g) }))
-    let best = scores[0].s
-    for (const x of scores) {
-      if (compareScores(x.s, best) > 0) best = x.s
-    }
-    const wids = scores.filter(x => compareScores(x.s, best) === 0).map(x => x.p.socketId)
-    g.winners = wids
-    for (const x of scores) {
-      g.log.push(`${x.p.name}: ${HAND_NAMES[x.s[0]]}`)
+    const rawScores = active.map(p => ({ p, s: scoreFor(p, g) }))
+    const scores = rawScores.filter(x => x.s != null)
+    if (scores.length === 0) {
+      g.winners = []
+      g.log.push('Showdown: could not evaluate hands.')
+    } else {
+      let best = scores[0].s
+      for (const x of scores) {
+        if (compareScores(x.s, best) > 0) best = x.s
+      }
+      const wids = scores.filter(x => compareScores(x.s, best) === 0).map(x => x.p.socketId)
+      g.winners = wids
+      for (const x of scores) {
+        g.log.push(`${x.p.name}: ${HAND_NAMES[x.s[0]]}`)
+      }
     }
     awardBySidePots(g, room)
     g.currentPlayer = -1
     g.toAct = []
     recordStats(room, g)
     delete g.handStartStacks
+    notifyHandCompleteForAutoDeal(room)
     return { ok: true, handOver: true }
   }
 

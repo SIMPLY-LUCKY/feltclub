@@ -34,6 +34,9 @@ function eval5(h) {
 }
 
 function cmpS(a, b) {
+  if (a == null && b == null) return 0
+  if (a == null) return -1
+  if (b == null) return 1
   for (let i = 0; i < Math.max(a.length, b.length); i++) {
     const d = (a[i] || 0) - (b[i] || 0)
     if (d) return d
@@ -51,6 +54,7 @@ function* combk(arr, k, start = 0, prefix = []) {
   }
 }
 
+/** NLHE: best 5-card hand from any 2 hole + 5 board (7 choose 5). */
 export function bestNLHE(hole, board) {
   const all = [...hole, ...board]
   let best = null
@@ -61,9 +65,12 @@ export function bestNLHE(hole, board) {
   return best
 }
 
-/** Omaha: exactly 2 hole + 3 board. */
-export function bestOmaha(hole, board) {
-  if (board.length < 3) return null
+/**
+ * PLO (PLO4/5/6): must use exactly 2 hole cards and exactly 3 board cards.
+ * Tries all C(hole,2) × C(board,3) combinations and returns the strongest 5-card score.
+ */
+export function bestPLOHand(hole, board) {
+  if (!hole || hole.length < 2 || !board || board.length < 3) return null
   let best = null
   for (const h2 of combk(hole, 2)) {
     for (const b3 of combk(board, 3)) {
@@ -72,6 +79,11 @@ export function bestOmaha(hole, board) {
     }
   }
   return best
+}
+
+/** @deprecated Use bestPLOHand; kept for callers that still import bestOmaha. */
+export function bestOmaha(hole, board) {
+  return bestPLOHand(hole, board)
 }
 
 export function compareScores(a, b) {

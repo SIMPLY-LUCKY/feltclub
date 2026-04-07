@@ -18,7 +18,7 @@ import {
   statKey,
   getSeatedPlayersSorted,
 } from './poker/engine.js'
-import { bestNLHE, bestOmaha, HAND_NAMES } from './poker/eval.js'
+import { bestNLHE, bestPLOHand, HAND_NAMES } from './poker/eval.js'
 
 const PORT = 3001
 /** Pause after showdown (or between-hands) before auto-dealing the next hand. */
@@ -203,6 +203,7 @@ function clearAutoDeal(room) {
   room.autoDealAt = null
 }
 
+/** Uses `startHand(room)`, which reads `room.gameType` so NLHE vs PLO4/5/6 get the correct hole count. */
 function tryStartNextHand(tableId) {
   const r = getRoom(tableId)
   if (!r?.game || (r.game.phase !== 'idle' && r.game.phase !== 'showdown')) return
@@ -279,16 +280,20 @@ function afterAction(room, tableId) {
   const g = room.game
   if (g?.phase === 'idle' || g?.phase === 'showdown') {
     clearTurn(room)
-    scheduleAutoDeal(tableId)
   }
   broadcastRoom(tableId)
   refreshTurnTimer(tableId)
 }
 
+function isPloTableVariant(variant) {
+  return variant === 'PLO4' || variant === 'PLO5' || variant === 'PLO6'
+}
+
 function handLabelFor(p, g) {
   if (!p.holeCards?.length || g.community.length < 3) return null
-  const s =
-    g.variant === 'NLHE' ? bestNLHE(p.holeCards, g.community) : bestOmaha(p.holeCards, g.community)
+  const s = isPloTableVariant(g.variant)
+    ? bestPLOHand(p.holeCards, g.community)
+    : bestNLHE(p.holeCards, g.community)
   return s ? HAND_NAMES[s[0]] : null
 }
 
@@ -637,6 +642,7 @@ io.on('connection', socket => {
       seatAssignment,
     }
     rooms.set(tableId, room)
+    room.onShowdownComplete = () => scheduleAutoDeal(tableId)
 
     const isSuper = isSuperAdminCredentials(playerName, superAdminPin)
     if (!addPlayerToRoom(socket, room, playerName, isSuper)) {
