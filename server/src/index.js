@@ -21,7 +21,7 @@ import {
 } from './poker/engine.js'
 import { bestNLHE, bestPLOHand, HAND_NAMES } from './poker/eval.js'
 
-const PORT = 3001
+const PORT = process.env.PORT || 3001
 /** Pause after showdown (or between-hands) before auto-dealing the next hand. */
 const NEXT_HAND_DELAY_MS = 5000
 /** Delay between dealing flop / turn / river when everyone is all-in (clients see each street briefly). */
