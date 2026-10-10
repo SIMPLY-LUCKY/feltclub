@@ -687,7 +687,7 @@ io.on('connection', socket => {
       seatAssignment,
     }
     rooms.set(tableId, room)
-    room.onShowdownComplete = () => scheduleAutoDeal(tableId)
+    room.onShowdownComplete = null
 
     const isSuper = isSuperAdminCredentials(playerName, superAdminPin)
     if (!addPlayerToRoom(socket, room, playerName, isSuper)) {

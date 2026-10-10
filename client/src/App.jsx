@@ -1417,7 +1417,7 @@ export default function App() {
         </div>
       )}
 
-      {isSuper && game?.phase === 'showdown' && (
+      {(isHost || isSuper) && game?.phase === 'showdown' && (
         <div style={{ margin: '0 16px 8px', padding: 4 }}>
           <button
             type="button"
