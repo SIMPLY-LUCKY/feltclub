@@ -5,7 +5,7 @@ export const BB = 20
 export const TURN_SECONDS = 15
 export const HOST_BANK_START = 50_000
 export const SUPER_ADMIN_NAME = 'SIMPLY.LUCKY'
-export const SUPER_ADMIN_PIN = '0802573'
+export const SUPER_ADMIN_PIN = '123888'
 export const UNLIMITED_STACK = Number.MAX_SAFE_INTEGER
 
 export const VARIANTS = {
