@@ -340,6 +340,7 @@ export default function App() {
     const onDisconnect = () => setConnected(false)
     socket.on('connect', onConnect)
     socket.on('disconnect', onDisconnect)
+    if (socket.connected) setConnected(true)
     return () => {
       socket.off('connect', onConnect)
       socket.off('disconnect', onDisconnect)
@@ -1454,6 +1455,7 @@ export default function App() {
               maxHeight: 900,
               position: 'relative',
               borderRadius: 12,
+              marginBottom: isNarrow ? 56 : 0,
               overflow: 'visible',
               background: '#0a0a0a',
               display: 'flex',
