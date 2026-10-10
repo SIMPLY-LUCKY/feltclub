@@ -300,9 +300,11 @@ export default function App() {
   const isSuperAdminRef = useRef(false)
 
   const vw = useViewportWidth()
+  const isNarrow = vw < 900
 
   const boardScale = useMemo(() => {
-    const budget = Math.max(500, Math.min(vw * 0.58, 680))
+    const budget =
+      vw < 640 ? Math.max(240, vw - 48) : Math.max(500, Math.min(vw * 0.58, 680))
     return rowFitScale(5, CARD_LAYOUT.board.w, BOARD_CARD_GAP, budget)
   }, [vw])
 
@@ -1441,7 +1443,7 @@ export default function App() {
         </div>
       )}
 
-      <div style={{ flex: 1, display: 'flex', minHeight: 0, padding: '8px 12px 12px', gap: 12 }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: isNarrow ? 'column' : 'row', minHeight: 0, padding: '8px 12px 12px', gap: 12 }}>
         {/* Table + log */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0, minHeight: 0 }}>
           <div
@@ -1953,7 +1955,7 @@ export default function App() {
         {/* Sidebar */}
         <aside
           style={{
-            width: 300,
+            width: isNarrow ? '100%' : 300,
             flexShrink: 0,
             display: 'flex',
             flexDirection: 'column',
